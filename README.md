@@ -33,7 +33,7 @@ The service exposes standings, schedules, game details, teams, rosters, player s
 
 Recommended Render Web Service commands:
 
-- Build: `pnpm install --frozen-lockfile`
+- Build: `pnpm install --frozen-lockfile && python3 -m pip install -r requirements.txt`
 - Start: `pnpm start`
 
 Configure secrets and runtime values in Render's environment settings. Do not commit `.env` or credentials.
