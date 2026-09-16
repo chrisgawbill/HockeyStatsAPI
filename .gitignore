@@ -1,0 +1,15 @@
+node_modules/
+.env
+.env.*
+!.env.example
+cache/
+ai-cache/
+roster-cache/
+player-cache/
+schedule-cache/
+standings-cache/
+stat-leaders-cache/
+*.log
+__pycache__/
+venv/
+.DS_Store

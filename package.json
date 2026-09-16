@@ -1,0 +1,31 @@
+{
+  "name": "api",
+  "version": "2.4.0",
+  "private": true,
+  "imports": {
+    "#platform/*": "./src/platform/*",
+    "#slices/*": "./src/slices/*",
+    "#presentation/*": "./src/presentation/*",
+    "#composition/*": "./src/composition/*"
+  },
+  "scripts": {
+    "db:migrate": "node src/platform/migrate.js",
+    "start": "node ./bin/www",
+    "test": "node --test 'src/test/**/*.test.js'"
+  },
+  "dependencies": {
+    "axios": "^1.16.1",
+    "compression": "^1.8.1",
+    "cors": "^2.8.6",
+    "debug": "~2.6.9",
+    "dotenv": "^17.4.2",
+    "express": "^4.22.2",
+    "express-rate-limit": "^8.5.2",
+    "google-auth-library": "9.15.1",
+    "helmet": "^8.2.0",
+    "http-errors": "~1.6.3",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "~1.9.1",
+    "pg": "^8.21.0"
+  }
+}
