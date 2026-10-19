@@ -10,7 +10,7 @@
   },
   "scripts": {
     "db:migrate": "node src/platform/migrate.js",
-    "start": "node ./bin/www",
+    "start": "node src/platform/migrate.js --if-configured && node ./bin/www",
     "test": "node --test 'src/test/**/*.test.js'"
   },
   "dependencies": {
