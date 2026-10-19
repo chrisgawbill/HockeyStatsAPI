@@ -229,10 +229,7 @@ function createPushNotificationService({
     const fresh = reports.filter((report) => {
       if (report.read) return false;
       const startMs = Date.parse(report.gameTime);
-      if (!Number.isFinite(startMs) || startMs < cutoff) return false;
-      return report.favoriteTeams.some(
-        (team) => mutedByTeam.get(team) === false,
-      );
+      return Number.isFinite(startMs) && startMs >= cutoff;
     });
     if (fresh.length === 0) return;
 
@@ -251,7 +248,12 @@ function createPushNotificationService({
       const claimed = await withTransaction((client) =>
         repository.claimPush(client, { userId, gameId: report.gameId }),
       );
-      if (!claimed) continue;
+      // A game whose favorites are all muted is claimed but never sent, so
+      // unmuting later does not push a game that finished while muted.
+      const unmuted = report.favoriteTeams.some(
+        (team) => mutedByTeam.get(team) === false,
+      );
+      if (!claimed || !unmuted) continue;
 
       const subscriptions = await withTransaction((client) =>
         repository.listSubscriptionsForUser(client, userId),

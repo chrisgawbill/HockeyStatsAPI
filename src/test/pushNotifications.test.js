@@ -496,6 +496,11 @@ test('dispatch skips read, ledgered, old and all-muted games', async () => {
     [5],
   );
   assert.ok(ctx.db.ledger.has('7:5'));
+  assert.ok(ctx.db.ledger.has('7:4'));
+
+  // Unmuting later must not push the game that finished while muted.
+  ctx.db.favorites.find((f) => f.team_tri_code === 'BOS').push_muted = false;
+  assert.deepEqual(await dispatch(ctx), { users: 1, sent: 0, removed: 0 });
 });
 
 test('dispatch pushes when one of two favorites in a game is unmuted', async () => {
