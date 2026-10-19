@@ -27,7 +27,19 @@ pnpm run db:migrate
 
 ## API
 
-The service exposes standings, schedules, game details, teams, rosters, player statistics, stat leaders, diagnostics, team-history AI, and optional Google-authenticated board-game streak sync. The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
+The service exposes standings, schedules, game details, teams, rosters, player statistics, stat leaders, diagnostics, team-history AI, and optional Google-authenticated features: board-game streak sync, favorite teams, and the After Action Report inbox.
+
+After Action Reports are computed on request, not by a background job (the hosted service sleeps when idle). For each of the user's favorite teams, the service merges the current season's club schedule (12-hour cache) with the current NHL week (10-minute cache) and reports every completed game that started no more than 12 hours before the team was favorited (so favoriting mid-game or just after the final horn still counts). Only favorites (`favorite_teams`) and read receipts (`after_action_report_reads`) are stored; run `pnpm run db:migrate` to create them.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /api/favorites` | `{ favorites: [{ triCode, since }] }` |
+| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` |
+| `GET /api/after-action-reports` | `{ reports, unreadCount }`, newest first, at most 25 |
+| `POST /api/after-action-reports/:gameId/read` | Mark one report read (204) |
+| `POST /api/after-action-reports/read-all` | Mark the whole inbox read |
+
+All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google`. The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
 
 ## Deployment
 

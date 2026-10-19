@@ -28,6 +28,9 @@ const { createAuthService } = require('#slices/auth/authService.js');
 const {
   createBoardGameStreakService,
 } = require('#slices/boardGameStreak/boardGameStreakService.js');
+const {
+  createAfterActionReportService,
+} = require('#slices/afterActionReports/afterActionReportService.js');
 
 /**
  * Composition root: the one place that knows which concrete platform adapters
@@ -62,6 +65,10 @@ function createContainer(overrides = {}) {
   const aiSummaryService = createAiSummaryService(platform);
   const authService = createAuthService(platform);
   const boardGameStreakService = createBoardGameStreakService(platform);
+  const afterActionReportService = createAfterActionReportService({
+    ...platform,
+    scheduleService,
+  });
 
   return {
     ...platform,
@@ -74,6 +81,7 @@ function createContainer(overrides = {}) {
     aiSummaryService,
     authService,
     boardGameStreakService,
+    afterActionReportService,
   };
 }
 
