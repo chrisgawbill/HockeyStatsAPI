@@ -21,6 +21,7 @@ const CACHE_TYPES = {
   STANDINGS: 'standings',
   STAT_LEADERS: 'stat-leaders',
   TEAM: 'team',
+  SHIFTS: 'shifts',
 };
 
 const CACHE_ROOT = path.join(__dirname, '../cache/');
@@ -41,6 +42,7 @@ const CACHE_DIRS = {
   [CACHE_TYPES.STANDINGS]: path.join(CACHE_ROOT, 'standings-cache/'),
   [CACHE_TYPES.STAT_LEADERS]: path.join(CACHE_ROOT, 'stat-leaders-cache/'),
   [CACHE_TYPES.TEAM]: path.join(CACHE_ROOT, 'team-cache/'),
+  [CACHE_TYPES.SHIFTS]: path.join(CACHE_ROOT, 'shifts-cache/'),
 };
 
 const CACHE_TTLS = {
@@ -51,6 +53,8 @@ const CACHE_TTLS = {
   [CACHE_TYPES.STANDINGS]: 24 * 60 * 60 * 1000,
   [CACHE_TYPES.STAT_LEADERS]: 24 * 60 * 60 * 1000,
   [CACHE_TYPES.TEAM]: 24 * 60 * 60 * 1000,
+  // Official shift charts never change once the game is OFF.
+  [CACHE_TYPES.SHIFTS]: Infinity,
 };
 
 function getTtl(type, options = {}) {

@@ -15,6 +15,7 @@ const {
 } = require('#slices/standings/standingsService.js');
 const { createTeamService } = require('#slices/teams/teamService.js');
 const { createRosterService } = require('#slices/rosters/rosterService.js');
+const { createLineService } = require('#slices/lines/lineService.js');
 const {
   createPlayerStatsService,
 } = require('#slices/players/playerStatsService.js');
@@ -63,6 +64,7 @@ function createContainer(overrides = {}) {
   const standingsService = createStandingsService(platform);
   const teamService = createTeamService(platform);
   const rosterService = createRosterService(platform);
+  const lineService = createLineService({ ...platform, scheduleService });
   const playerStatsService = createPlayerStatsService(platform);
   const statLeaderService = createStatLeaderService(platform);
   const aiSummaryService = createAiSummaryService(platform);
@@ -83,6 +85,7 @@ function createContainer(overrides = {}) {
     standingsService,
     teamService,
     rosterService,
+    lineService,
     playerStatsService,
     statLeaderService,
     aiSummaryService,

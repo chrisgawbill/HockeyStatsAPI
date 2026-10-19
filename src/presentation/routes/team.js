@@ -6,19 +6,33 @@ const {
 /**
  * Team endpoints, all season-capable:
  *   GET /team/roster/:triCode?season=    normalized RosterContract
+ *   GET /team/lines/:triCode?season=     forward lines / D pairs / starter from the latest shift chart
  *   GET /team/schedule/:triCode?season=  `{ games }` sorted by date
  *   GET /team/:teamId??season=           raw team summary stats
  *
  * The schedule endpoint is served by the schedule slice (it owns schedule
  * mapping and persistence); this router just composes the two services.
  */
-function createTeamRouter({ teamService, rosterService, scheduleService }) {
+function createTeamRouter({
+  teamService,
+  rosterService,
+  scheduleService,
+  lineService,
+}) {
   const router = express.Router();
   router.use(validateSeason);
 
   router.get('/roster/:triCode', async (req, res, next) => {
     try {
       res.send(await rosterService.getRoster(req.params.triCode, req.seasonId));
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.get('/lines/:triCode', async (req, res, next) => {
+    try {
+      res.send(await lineService.getLines(req.params.triCode, req.seasonId));
     } catch (e) {
       next(e);
     }
