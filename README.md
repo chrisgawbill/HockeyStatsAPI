@@ -23,6 +23,8 @@ Set `CACHE_DATABASE_URL` in `.env`, then run:
 pnpm run db:migrate
 ```
 
+Pending migrations also run automatically on `pnpm start`, before the server listens. When `CACHE_DATABASE_URL` is unset (filesystem-cache mode) the step is skipped; if a migration fails, the process exits non-zero and the server does not start. A Postgres advisory lock keeps concurrent instances from applying the same migration twice, and the connection uses the same SSL settings as the app (`DATABASE_CA_CERT` is required when SSL is on). `pnpm run db:migrate` still works for manual runs and fails if `CACHE_DATABASE_URL` is missing.
+
 `DATABASE_URL` is used for normalized domain persistence when set; otherwise the service falls back to `CACHE_DATABASE_URL`. See `.env.example` for cache, database, AI, diagnostics, CORS-related deployment, and Google auth configuration.
 
 ## API
@@ -46,6 +48,6 @@ All of these require `Authorization: Bearer <session token>` from `POST /api/aut
 Recommended Render Web Service commands:
 
 - Build: `pnpm install --frozen-lockfile && python3 -m pip install -r requirements.txt`
-- Start: `pnpm start`
+- Start: `pnpm start` (applies pending database migrations, then starts the server; no pre-deploy command is needed)
 
 Configure secrets and runtime values in Render's environment settings. Do not commit `.env` or credentials.
