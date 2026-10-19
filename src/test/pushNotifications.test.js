@@ -170,6 +170,10 @@ function fakeDb() {
         db.ledger.add(key);
         return { rows: [{ game_id: params[1] }] };
       }
+      if (sql.includes('INSERT INTO weekly_player_report_pushes')) {
+        db.weeklySeeded = (db.weeklySeeded ?? 0) + 1;
+        return { rows: [] };
+      }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };

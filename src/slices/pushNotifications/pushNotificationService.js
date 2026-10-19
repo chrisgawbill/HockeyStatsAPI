@@ -1,6 +1,12 @@
 const crypto = require('crypto');
 const createError = require('http-errors');
 const repository = require('#slices/pushNotifications/pushNotificationRepository.js');
+const {
+  easternClock,
+  isWeekStart,
+  previousWeekStart,
+  weekEndOf,
+} = require('#slices/weeklyPlayerReports/weeklyReportBuilder.js');
 
 /** Dispatch skips games that started longer ago than this. */
 const MAX_GAME_AGE_MS = 12 * 60 * 60 * 1000;
@@ -72,6 +78,7 @@ function buildNotification(report) {
  *   withTransaction: typeof import('#platform/pool.js').withTransaction,
  *   sessionJwt: typeof import('#platform/sessionJwt.js'),
  *   afterActionReportService: ReturnType<typeof import('#slices/afterActionReports/afterActionReportService.js').createAfterActionReportService>,
+ *   weeklyPlayerReportService: ReturnType<typeof import('#slices/weeklyPlayerReports/weeklyPlayerReportService.js').createWeeklyPlayerReportService>,
  *   webPush?: { sendNotification: Function },
  *   now?: () => number,
  * }} deps
@@ -80,6 +87,7 @@ function createPushNotificationService({
   withTransaction,
   sessionJwt,
   afterActionReportService,
+  weeklyPlayerReportService,
   webPush = require('web-push'),
   now = () => Date.now(),
 }) {
@@ -109,6 +117,35 @@ function createPushNotificationService({
     );
   }
 
+  /**
+   * Sends one payload to every device of `userId`, deleting subscriptions the
+   * push service reports gone (404/410) and counting into `summary`.
+   */
+  async function sendToUser(userId, payload, vapid, summary, label) {
+    const subscriptions = await withTransaction((client) =>
+      repository.listSubscriptionsForUser(client, userId),
+    );
+    for (const subscription of subscriptions) {
+      try {
+        await sendToSubscription(subscription, payload, vapid);
+        summary.sent += 1;
+      } catch (error) {
+        if (error?.statusCode === 404 || error?.statusCode === 410) {
+          await withTransaction((client) =>
+            repository.deleteSubscriptionById(client, subscription.id),
+          );
+          summary.removed += 1;
+        } else {
+          console.error(
+            `Push send failed (user ${userId}, ${label}):`,
+            error?.statusCode ?? '',
+            error?.message ?? error,
+          );
+        }
+      }
+    }
+  }
+
   return {
     getConfig() {
       const vapid = getVapid();
@@ -126,12 +163,13 @@ function createPushNotificationService({
       // Opt-in never pushes anything old: everything already in the inbox is
       // recorded as sent.
       const { reports } = await afterActionReportService.listReports(userId);
-      await withTransaction((client) =>
-        repository.insertLedgerGameIds(client, {
+      await withTransaction(async (client) => {
+        await repository.insertLedgerGameIds(client, {
           userId,
           gameIds: reports.map((report) => report.gameId),
-        }),
-      );
+        });
+        await repository.seedWeeklyLedger(client, userId);
+      });
     },
 
     async unsubscribe(userId, body) {
@@ -142,15 +180,105 @@ function createPushNotificationService({
       );
     },
 
-    /** Marks the token's game read for the token's user. 401 on any bad token. */
+    /**
+     * Marks the token's game (After Action Report) or week (Weekly Player
+     * Report) read for the token's user. 401 on any bad token.
+     */
     async markReadFromToken(token) {
-      let claims;
+      let game = null;
+      let week = null;
       try {
-        claims = sessionJwt.verifyReadToken(token);
+        game = sessionJwt.verifyReadToken(token);
       } catch {
-        throw createError(401, 'Unauthorized');
+        try {
+          week = sessionJwt.verifyWeeklyReadToken(token);
+        } catch {
+          throw createError(401, 'Unauthorized');
+        }
       }
-      await afterActionReportService.markRead(claims.userId, claims.gameId);
+      if (game) {
+        await afterActionReportService.markRead(game.userId, game.gameId);
+      } else {
+        await weeklyPlayerReportService.markRead(week.userId, week.weekStart);
+      }
+    },
+
+    async getWeeklyReportPush(userId) {
+      const enabled = await withTransaction((client) =>
+        repository.getWeeklyReportPush(client, userId),
+      );
+      return { enabled };
+    },
+
+    async setWeeklyReportPush(userId, enabled) {
+      if (typeof enabled !== 'boolean') {
+        throw createError(400, 'enabled must be a boolean.');
+      }
+      await withTransaction((client) =>
+        repository.setWeeklyReportPush(client, { userId, enabled }),
+      );
+      return { enabled };
+    },
+
+    /**
+     * Monday dispatch: generates last week's Weekly Player Reports (or skips
+     * a league-break week), then pushes each new, unread report once to users
+     * who have a device subscribed and the weekly switch on. `weekStart`
+     * overrides the week (manual reruns); it must be a completed week.
+     */
+    async weeklyDispatch({ weekStart } = {}) {
+      const vapid = requireConfigured();
+      const week = weekStart ?? previousWeekStart(now());
+      if (!isWeekStart(week) || weekEndOf(week) >= easternClock(now()).date) {
+        throw createError(400, 'weekStart must be a completed Monday week.');
+      }
+      const generated = await weeklyPlayerReportService.generateWeek(week);
+      const summary = {
+        weekStart: week,
+        ...generated,
+        users: 0,
+        sent: 0,
+        removed: 0,
+      };
+      if (generated.skipped) return summary;
+
+      const [subscribed, optedOut, reports] = await Promise.all([
+        withTransaction((client) => repository.listSubscriptionUserIds(client)),
+        withTransaction((client) => repository.listWeeklyPushOptOuts(client)),
+        weeklyPlayerReportService.listReportsForWeek(week),
+      ]);
+      const subscribedIds = new Set(subscribed.map(String));
+      const optedOutIds = new Set(optedOut);
+
+      for (const { userId, report, read } of reports) {
+        const id = String(userId);
+        if (read || !subscribedIds.has(id) || optedOutIds.has(id)) continue;
+        summary.users += 1;
+        try {
+          const claimed = await withTransaction((client) =>
+            repository.claimWeeklyPush(client, { userId, weekStart: week }),
+          );
+          if (!claimed) continue;
+          const payload = {
+            kind: 'weekly-report',
+            title: `Weekly Player Report · ${report.label}`,
+            body: report.headline,
+            weekStart: week,
+            tag: `wpr-${week}`,
+            readToken: sessionJwt.signWeeklyReadToken({
+              userId,
+              weekStart: week,
+            }),
+          };
+          await sendToUser(userId, payload, vapid, summary, `week ${week}`);
+        } catch (error) {
+          console.error(
+            `Weekly push failed for user ${userId}:`,
+            error?.message ?? error,
+          );
+        }
+      }
+      return summary;
     },
 
     /** Throws 503 when dispatch is unconfigured, 401 on a bad bearer secret. */
@@ -255,34 +383,19 @@ function createPushNotificationService({
       );
       if (!claimed || !unmuted) continue;
 
-      const subscriptions = await withTransaction((client) =>
-        repository.listSubscriptionsForUser(client, userId),
-      );
       const payload = {
         ...buildNotification(report),
         gameId: report.gameId,
         tag: `aar-${report.gameId}`,
         readToken: sessionJwt.signReadToken({ userId, gameId: report.gameId }),
       };
-      for (const subscription of subscriptions) {
-        try {
-          await sendToSubscription(subscription, payload, vapid);
-          summary.sent += 1;
-        } catch (error) {
-          if (error?.statusCode === 404 || error?.statusCode === 410) {
-            await withTransaction((client) =>
-              repository.deleteSubscriptionById(client, subscription.id),
-            );
-            summary.removed += 1;
-          } else {
-            console.error(
-              `Push send failed (user ${userId}, game ${report.gameId}):`,
-              error?.statusCode ?? '',
-              error?.message ?? error,
-            );
-          }
-        }
-      }
+      await sendToUser(
+        userId,
+        payload,
+        vapid,
+        summary,
+        `game ${report.gameId}`,
+      );
     }
   }
 }
