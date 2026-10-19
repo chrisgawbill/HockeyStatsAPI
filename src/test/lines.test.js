@@ -450,6 +450,27 @@ test('stored play-by-play payload contains only faceoff plays', async () => {
   assert.ok(stored.plays.every((p) => p.typeDescKey === 'faceoff'));
 });
 
+test('empty play-by-play for OFF game is not permanently cached and is remembered briefly', async () => {
+  const { service, calls, store } = setup({
+    games: { recent: [game()] },
+    pbp: { plays: [] },
+  });
+  const out = await service.getLines('COL', '20262027');
+  assert.equal(out.source, 'shifts');
+  assert.ok(!store.has('shifts:2026020010_faceoffs'));
+  assert.ok(store.has('shifts:2026020010_faceoffs_prelim'));
+
+  const pbpFetches = () =>
+    calls.gets.filter((u) => u.includes('play-by-play')).length;
+  assert.equal(pbpFetches(), 1);
+  await service.getLines('COL', '20262027');
+  assert.equal(
+    pbpFetches(),
+    1,
+    'second request is served by the negative cache',
+  );
+});
+
 test('play-by-play fetch error still returns shifts lines', async () => {
   const orig = console.error;
   const logged = [];
