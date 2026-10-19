@@ -1,0 +1,38 @@
+name: Weekly player report
+
+on:
+  schedule:
+    # Mondays at 13:05 and 14:05 UTC; the script keeps only the run at or
+    # after 9:00 America/New_York (EDT or EST), and the API sends once.
+    - cron: '5 13,14 * * 1'
+  workflow_dispatch:
+    inputs:
+      week_start:
+        description: 'Optional completed week Monday (YYYY-MM-DD); defaults to last week'
+        required: false
+
+concurrency:
+  group: weekly-player-report
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Generate and push weekly player reports
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          AAR_PUSH_API_URL: ${{ secrets.AAR_PUSH_API_URL }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
+          WEEK_START: ${{ github.event.inputs.week_start }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$AAR_PUSH_API_URL" ]; then
+            echo "::error::Set the CRON_SECRET and AAR_PUSH_API_URL repository secrets."
+            exit 1
+          fi
+          node bin/weekly-report-cron.js

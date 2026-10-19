@@ -20,20 +20,19 @@ afterEach(() => {
   console.error = originalError;
 });
 
-test('runServiceTask returns null (fire-and-forget contract)', async () => {
+test('tasks run one at a time, fire-and-forget, and a failure does not stall the queue', async () => {
+  const events = [];
   assert.equal(
-    runServiceTask('fire-forget', () => Promise.resolve()),
+    runServiceTask('a', async () => {
+      events.push('a-start');
+      await delay(20);
+      events.push('a-end');
+    }),
     null,
   );
-  await whenIdle();
-});
-
-test('tasks run one at a time (concurrency 1)', async () => {
-  const events = [];
-  runServiceTask('a', async () => {
-    events.push('a-start');
-    await delay(20);
-    events.push('a-end');
+  runServiceTask('boom', async () => {
+    events.push('boom');
+    throw new Error('kaboom');
   });
   runServiceTask('b', async () => {
     events.push('b-start');
@@ -42,45 +41,22 @@ test('tasks run one at a time (concurrency 1)', async () => {
   });
 
   await whenIdle();
-  // b must not start until a has finished — no interleaving.
-  assert.deepEqual(events, ['a-start', 'a-end', 'b-start', 'b-end']);
+  // No interleaving, and the failing task is followed by the next one.
+  assert.deepEqual(events, ['a-start', 'a-end', 'boom', 'b-start', 'b-end']);
 });
 
-test('a duplicate label is skipped while one is queued/running', async () => {
+test('a duplicate label is skipped while in flight but may run again afterwards', async () => {
   let calls = 0;
   const fn = async () => {
     calls += 1;
     await delay(10);
   };
   runServiceTask('dupe', fn);
-  runServiceTask('dupe', fn); // same label, still in-flight → skipped
-
+  runServiceTask('dupe', fn); // same label, still in flight -> skipped
   await whenIdle();
   assert.equal(calls, 1);
-});
 
-test('the same label may run again after it completes', async () => {
-  let calls = 0;
-  const fn = async () => {
-    calls += 1;
-  };
-  runServiceTask('reuse', fn);
-  await whenIdle();
-  runServiceTask('reuse', fn);
+  runServiceTask('dupe', fn);
   await whenIdle();
   assert.equal(calls, 2);
-});
-
-test('a failing task does not stall the queue', async () => {
-  const events = [];
-  runServiceTask('boom', async () => {
-    events.push('boom');
-    throw new Error('kaboom');
-  });
-  runServiceTask('after', async () => {
-    events.push('after');
-  });
-
-  await whenIdle();
-  assert.deepEqual(events, ['boom', 'after']);
 });

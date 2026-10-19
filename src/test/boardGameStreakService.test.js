@@ -1,63 +1,31 @@
 const assert = require('node:assert/strict');
-const { beforeEach, test } = require('node:test');
+const { test } = require('node:test');
 
 const {
   mergeStreaks,
 } = require('#slices/boardGameStreak/boardGameStreakService.js');
 
-test('mergeStreaks unions disjoint wins from both sides', () => {
-  const a = { wins: { '2026-01-01': true }, lastWinDate: '2026-01-01' };
-  const b = { wins: { '2026-01-02': true }, lastWinDate: '2026-01-02' };
-
-  const merged = mergeStreaks(a, b);
-
+test('mergeStreaks unions wins without duplicates and keeps the later lastWinDate', () => {
+  const merged = mergeStreaks(
+    {
+      wins: { '2026-01-01': true, '2026-01-02': true },
+      lastWinDate: '2026-01-02',
+    },
+    { wins: { '2026-01-02': true, '2026-01-03': true }, lastWinDate: '2026-01-03' },
+  );
   assert.deepEqual(merged.wins, {
     '2026-01-01': true,
     '2026-01-02': true,
+    '2026-01-03': true,
   });
-});
 
-test('mergeStreaks does not duplicate or corrupt overlapping win keys', () => {
-  const a = {
-    wins: { '2026-01-01': true, '2026-01-02': true },
-    lastWinDate: '2026-01-02',
-  };
-  const b = { wins: { '2026-01-02': true }, lastWinDate: '2026-01-02' };
-
-  const merged = mergeStreaks(a, b);
-
-  assert.deepEqual(merged.wins, {
-    '2026-01-01': true,
-    '2026-01-02': true,
-  });
-  assert.equal(Object.keys(merged.wins).length, 2);
-});
-
-test('mergeStreaks picks the lexicographically later lastWinDate from either side', () => {
-  assert.equal(
-    mergeStreaks(
-      { wins: {}, lastWinDate: '2026-01-05' },
-      { wins: {}, lastWinDate: '2026-01-09' },
-    ).lastWinDate,
-    '2026-01-09',
-  );
-  assert.equal(
-    mergeStreaks(
-      { wins: {}, lastWinDate: '2026-02-01' },
-      { wins: {}, lastWinDate: '2026-01-09' },
-    ).lastWinDate,
-    '2026-02-01',
-  );
-  assert.equal(
-    mergeStreaks({ wins: {}, lastWinDate: null }, { wins: {}, lastWinDate: '2026-01-09' })
-      .lastWinDate,
-    '2026-01-09',
-  );
-  assert.equal(
-    mergeStreaks({ wins: {}, lastWinDate: '2026-01-09' }, { wins: {}, lastWinDate: null })
-      .lastWinDate,
-    '2026-01-09',
-  );
+  const last = (a, b) =>
+    mergeStreaks({ wins: {}, lastWinDate: a }, { wins: {}, lastWinDate: b })
+      .lastWinDate;
+  assert.equal(last('2026-01-05', '2026-01-09'), '2026-01-09');
+  assert.equal(last('2026-02-01', '2026-01-09'), '2026-02-01');
+  assert.equal(last(null, '2026-01-09'), '2026-01-09');
+  assert.equal(last('2026-01-09', null), '2026-01-09');
 });
 
 // --- Service-level tests against an in-memory fake of the repository's
@@ -108,44 +76,22 @@ async function fakeWithTransaction(callback) {
 
 const service = createServiceFresh({ withTransaction: fakeWithTransaction });
 
-beforeEach(() => {
-  rows.clear();
-});
+test('service reads an empty streak, merges puts into storage, and is idempotent', async () => {
+  assert.deepEqual(await service.getStreakForUser('user-1'), {
+    wins: {},
+    lastWinDate: null,
+  });
 
-test('getStreakForUser returns an empty streak when no row exists yet', async () => {
-  const result = await service.getStreakForUser('user-1');
-  assert.deepEqual(result, { wins: {}, lastWinDate: null });
-});
-
-test('putStreakForUser merges into whatever is already stored', async () => {
   await service.putStreakForUser('user-1', {
     wins: { '2026-01-01': true },
     lastWinDate: '2026-01-01',
   });
-
-  const result = await service.putStreakForUser('user-1', {
-    wins: { '2026-01-02': true },
-    lastWinDate: '2026-01-02',
-  });
-
-  assert.deepEqual(result, {
-    wins: { '2026-01-01': true, '2026-01-02': true },
-    lastWinDate: '2026-01-02',
-  });
-});
-
-test('putStreakForUser is idempotent for identical input', async () => {
-  const input = {
+  const input = { wins: { '2026-01-02': true }, lastWinDate: '2026-01-02' };
+  const expected = {
     wins: { '2026-01-01': true, '2026-01-02': true },
     lastWinDate: '2026-01-02',
   };
-
-  const first = await service.putStreakForUser('user-2', input);
-  const second = await service.putStreakForUser('user-2', input);
-
-  assert.deepEqual(first, second);
-  assert.deepEqual(second, {
-    wins: { '2026-01-01': true, '2026-01-02': true },
-    lastWinDate: '2026-01-02',
-  });
+  assert.deepEqual(await service.putStreakForUser('user-1', input), expected);
+  assert.deepEqual(await service.putStreakForUser('user-1', input), expected);
+  assert.deepEqual(await service.getStreakForUser('user-1'), expected);
 });

@@ -23,6 +23,10 @@ const {
   createAfterActionReportsRouter,
 } = require('#presentation/routes/afterActionReports.js');
 const { createPushRouter } = require('#presentation/routes/push.js');
+const {
+  createFavoritePlayersRouter,
+  createWeeklyPlayerReportsRouter,
+} = require('#presentation/routes/weeklyPlayerReports.js');
 
 const corsOptions = {
   origin: [
@@ -69,6 +73,11 @@ function createApp(container) {
     createAfterActionReportsRouter(container),
   );
   app.use('/api/push', createPushRouter(container));
+  app.use('/api/favorite-players', createFavoritePlayersRouter(container));
+  app.use(
+    '/api/weekly-player-reports',
+    createWeeklyPlayerReportsRouter(container),
+  );
 
   app.use(notFoundHandler);
   app.use(errorHandler);

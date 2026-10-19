@@ -57,4 +57,16 @@ async function request(app, path, options = {}) {
   });
 }
 
-module.exports = { makeTestApp, request };
+/** `request` with the JSON content headers express.json() needs for a body. */
+function jsonRequest(app, path, options = {}) {
+  const headers = options.body
+    ? {
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(options.body)),
+        ...options.headers,
+      }
+    : options.headers;
+  return request(app, path, { ...options, headers });
+}
+
+module.exports = { makeTestApp, request, jsonRequest };

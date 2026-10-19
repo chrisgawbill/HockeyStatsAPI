@@ -87,7 +87,63 @@ async function claimPush(client, { userId, gameId }) {
   return result.rows.length > 0;
 }
 
+/** Atomically claims a (user, week) weekly-report push. */
+async function claimWeeklyPush(client, { userId, weekStart }) {
+  const result = await client.query(
+    `
+		INSERT INTO weekly_player_report_pushes (user_id, week_start)
+		VALUES ($1, $2::date)
+		ON CONFLICT (user_id, week_start) DO NOTHING
+		RETURNING user_id
+		`,
+    [userId, weekStart],
+  );
+  return result.rows.length > 0;
+}
+
+/** Marks every weekly report the user already has as pushed (opt-in seeding). */
+async function seedWeeklyLedger(client, userId) {
+  await client.query(
+    `
+		INSERT INTO weekly_player_report_pushes (user_id, week_start)
+		SELECT user_id, week_start
+		FROM weekly_player_reports
+		WHERE user_id = $1
+		ON CONFLICT (user_id, week_start) DO NOTHING
+		`,
+    [userId],
+  );
+}
+
+async function getWeeklyReportPush(client, userId) {
+  const result = await client.query(
+    'SELECT weekly_report_push FROM users WHERE id = $1',
+    [userId],
+  );
+  return result.rows[0] ? Boolean(result.rows[0].weekly_report_push) : true;
+}
+
+async function setWeeklyReportPush(client, { userId, enabled }) {
+  await client.query('UPDATE users SET weekly_report_push = $2 WHERE id = $1', [
+    userId,
+    enabled,
+  ]);
+}
+
+/** Users who switched the weekly-report push off. */
+async function listWeeklyPushOptOuts(client) {
+  const result = await client.query(
+    'SELECT id FROM users WHERE weekly_report_push = false',
+  );
+  return result.rows.map((row) => String(row.id));
+}
+
 module.exports = {
+  claimWeeklyPush,
+  seedWeeklyLedger,
+  getWeeklyReportPush,
+  setWeeklyReportPush,
+  listWeeklyPushOptOuts,
   upsertSubscription,
   deleteSubscriptionForUser,
   deleteSubscriptionById,

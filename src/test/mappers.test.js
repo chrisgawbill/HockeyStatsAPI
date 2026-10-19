@@ -21,16 +21,14 @@ const {
   mapStatLeaders,
 } = require('#slices/statLeaders/mappers/statLeaderMapper.js');
 
-test('mapBroadcasts defaults missing broadcast fields', () => {
-  const result = mapBroadcasts([{ id: 1, network: 'ESPN' }, null, {}]);
+test('mapGame fills guarded defaults, including broadcasts', () => {
+  const broadcasts = mapBroadcasts([{ id: 1, network: 'ESPN' }, null, {}]);
 
-  assert.deepEqual(result, [
+  assert.deepEqual(broadcasts, [
     { id: 1, network: 'ESPN', market: '', countryCode: '' },
     { id: null, network: '', market: '', countryCode: '' },
   ]);
-});
 
-test('mapGame handles missing venue scores and guarded defaults', () => {
   const result = mapGame(
     {
       id: 2023020001,
@@ -72,8 +70,8 @@ test('mapGame handles missing venue scores and guarded defaults', () => {
   });
 });
 
-test('mapGame only exposes ticketLink for future games', () => {
-  const result = mapGame(
+test('mapGame hides tickets after the game and maps playoff and preseason fields', () => {
+  const final = mapGame(
     {
       id: 2023020002,
       gameState: 'FINAL',
@@ -85,13 +83,11 @@ test('mapGame only exposes ticketLink for future games', () => {
     { date: '2024-01-02', dayAbbrev: 'Tue' },
   );
 
-  assert.equal(result.ticketLink, '');
-  assert.equal(result.homeScore, 4);
-  assert.equal(result.awayScore, 2);
-});
+  assert.equal(final.ticketLink, '');
+  assert.equal(final.homeScore, 4);
+  assert.equal(final.awayScore, 2);
 
-test('mapGame maps playoff fields', () => {
-  const result = mapGame(
+  const playoff = mapGame(
     {
       id: 2023030123,
       gameState: 'OFF',
@@ -111,16 +107,14 @@ test('mapGame maps playoff fields', () => {
     { date: '2024-05-01', dayAbbrev: 'Wed' },
   );
 
-  assert.equal(result.isPlayoff, true);
-  assert.equal(result.playoffRound, 2);
-  assert.equal(result.periodType, 'REG');
-  assert.equal(result.seriesWins, '3-2');
-  assert.equal(result.topSeedTeamAbbrev, 'COL');
-  assert.equal(result.bottomSeedTeamAbbrev, 'DAL');
-});
+  assert.equal(playoff.isPlayoff, true);
+  assert.equal(playoff.playoffRound, 2);
+  assert.equal(playoff.periodType, 'REG');
+  assert.equal(playoff.seriesWins, '3-2');
+  assert.equal(playoff.topSeedTeamAbbrev, 'COL');
+  assert.equal(playoff.bottomSeedTeamAbbrev, 'DAL');
 
-test('mapGame marks preseason games via gameType 1', () => {
-  const result = mapGame(
+  const preseason = mapGame(
     {
       id: 2024010001,
       gameState: 'FUT',
@@ -132,19 +126,17 @@ test('mapGame marks preseason games via gameType 1', () => {
     { date: '2024-09-22', dayAbbrev: 'Sun' },
   );
 
-  assert.equal(result.isPreseason, true);
-  assert.equal(result.isPlayoff, false);
+  assert.equal(preseason.isPreseason, true);
+  assert.equal(preseason.isPlayoff, false);
 });
 
-test('resolveTeamId uses NHL fallback chain', () => {
+test('resolveTeamId and mapStandingsTeam handle NHL field variants', () => {
   assert.equal(resolveTeamId({ teamAbbrev: { default: 'COL' } }), 'COL');
   assert.equal(resolveTeamId({ teamId: { id: 10 } }), 10);
   assert.equal(resolveTeamId({ teamId: 11 }), 11);
   assert.equal(resolveTeamId({ id: 12 }), 12);
   assert.equal(resolveTeamId({ team: { id: 13 } }), 13);
-});
 
-test('mapStandingsTeam maps clinchingIndicator spelling', () => {
   const result = mapStandingsTeam({
     teamAbbrev: { default: 'COL' },
     teamLogo: 'logo.svg',
@@ -167,19 +159,17 @@ test('mapStandingsTeam maps clinchingIndicator spelling', () => {
   assert.equal(result.teamId, 'COL');
   assert.equal(result.name, 'Avalanche');
   assert.equal(result.clinchingIndicator, 'p');
-});
 
-test('mapStandingsTeam maps clinchIndicator renamed spelling', () => {
-  const result = mapStandingsTeam({
+  // The renamed clinchIndicator spelling is accepted too.
+  const renamed = mapStandingsTeam({
     teamAbbrev: { default: 'DAL' },
     teamCommonName: { default: 'Stars' },
     clinchIndicator: 'x',
   });
 
-  assert.equal(result.clinchingIndicator, 'x');
-});
+  assert.equal(renamed.clinchingIndicator, 'x');
 
-test('mapStandingsTeam returns null when team id cannot be resolved', () => {
+  // An unresolvable team id maps to null.
   const originalWarn = console.warn;
   console.warn = () => {};
 
@@ -193,24 +183,22 @@ test('mapStandingsTeam returns null when team id cannot be resolved', () => {
   }
 });
 
-test('mapRosterPlayer uses guarded name defaults', () => {
-  const result = mapRosterPlayer({
+test('roster mappers guard names and flatten every position bucket', () => {
+  const player = mapRosterPlayer({
     id: 1,
     firstName: { default: 'Nathan' },
     sweaterNumber: 29,
     positionCode: 'C',
   });
 
-  assert.deepEqual(result, {
+  assert.deepEqual(player, {
     id: 1,
     name: 'Nathan',
     number: 29,
     position: 'C',
     headshot: '',
   });
-});
 
-test('mapRoster flattens forwards defensemen and goalies', () => {
   const result = mapRoster({
     forwards: [{ id: 1, firstName: { default: 'Forward' } }],
     defensemen: [{ id: 2, firstName: { default: 'Defense' } }],
@@ -223,8 +211,8 @@ test('mapRoster flattens forwards defensemen and goalies', () => {
   );
 });
 
-test('mapSkaterSummary maps defaults and treats zero faceoff percentage as null', () => {
-  const result = mapSkaterSummary({
+test('skater and goalie summaries map defaults and id/percentage variants', () => {
+  const skaters = mapSkaterSummary({
     data: [
       {
         playerId: 29,
@@ -243,15 +231,13 @@ test('mapSkaterSummary maps defaults and treats zero faceoff percentage as null'
     ],
   });
 
-  assert.equal(result[0].faceoffWinPct, null);
-  assert.equal(result[0].toiPerGame, 1320);
-  assert.equal(result[1].name, '');
-  assert.equal(result[1].goals, 0);
-  assert.equal(result[1].faceoffWinPct, 0.55);
-});
+  assert.equal(skaters[0].faceoffWinPct, null);
+  assert.equal(skaters[0].toiPerGame, 1320);
+  assert.equal(skaters[1].name, '');
+  assert.equal(skaters[1].goals, 0);
+  assert.equal(skaters[1].faceoffWinPct, 0.55);
 
-test('mapGoalieSummary accepts goalieId or playerId', () => {
-  const result = mapGoalieSummary({
+  const goalies = mapGoalieSummary({
     data: [
       {
         goalieId: 35,
@@ -268,15 +254,15 @@ test('mapGoalieSummary accepts goalieId or playerId', () => {
     ],
   });
 
-  assert.equal(result[0].goalieId, 35);
-  assert.equal(result[0].savePctg, 0.925);
-  assert.equal(result[0].toiPerGame, 3600);
-  assert.equal(result[1].goalieId, 36);
-  assert.equal(result[1].wins, 0);
-  assert.equal(result[1].savePctg, null);
+  assert.equal(goalies[0].goalieId, 35);
+  assert.equal(goalies[0].savePctg, 0.925);
+  assert.equal(goalies[0].toiPerGame, 3600);
+  assert.equal(goalies[1].goalieId, 36);
+  assert.equal(goalies[1].wins, 0);
+  assert.equal(goalies[1].savePctg, null);
 });
 
-test('mapStatLeaders guards missing default fields', () => {
+test('mapStatLeaders guards missing fields and missing categories', () => {
   const result = mapStatLeaders(
     {
       goals: [
@@ -308,9 +294,7 @@ test('mapStatLeaders guards missing default fields', () => {
       value: 51,
     },
   ]);
-});
 
-test('mapStatLeaders returns empty array when category is missing', () => {
   assert.deepEqual(mapStatLeaders({ goals: [] }, 'assists'), []);
   assert.deepEqual(mapStatLeaders(null, 'goals'), []);
 });

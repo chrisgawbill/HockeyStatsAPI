@@ -71,45 +71,23 @@ function loadCacheManager(env = {}, pgRows = null, tableBytes = 0) {
 
 afterEach(restoreEnv);
 
-test('cache storage defaults to filesystem without a database URL', () => {
-  const cacheManager = loadCacheManager();
-
-  assert.equal(cacheManager.getCacheStorageMode(), 'filesystem');
-});
-
-test('cache storage defaults to postgres when a database URL is configured', () => {
-  const cacheManager = loadCacheManager({
-    CACHE_DATABASE_URL: 'postgres://user:pass@localhost:5432/hockey',
-  });
-
-  assert.equal(cacheManager.getCacheStorageMode(), 'postgres');
-});
-
-test('cache storage accepts explicit filesystem mode even with a database URL', () => {
-  const cacheManager = loadCacheManager({
-    CACHE_DATABASE_URL: 'postgres://user:pass@localhost:5432/hockey',
-    CACHE_STORAGE: 'filesystem',
-  });
-
-  assert.equal(cacheManager.getCacheStorageMode(), 'filesystem');
-});
-
-test('cache storage accepts explicit hybrid mode', () => {
-  const cacheManager = loadCacheManager({
-    CACHE_DATABASE_URL: 'postgres://user:pass@localhost:5432/hockey',
-    CACHE_STORAGE: 'hybrid',
-  });
-
-  assert.equal(cacheManager.getCacheStorageMode(), 'hybrid');
-});
-
-test('cache storage ignores unknown modes and falls back from environment', () => {
-  const cacheManager = loadCacheManager({
-    CACHE_DATABASE_URL: 'postgres://user:pass@localhost:5432/hockey',
-    CACHE_STORAGE: 'redis',
-  });
-
-  assert.equal(cacheManager.getCacheStorageMode(), 'postgres');
+test('cache storage mode follows CACHE_STORAGE, else whether a database URL is set', () => {
+  const url = 'postgres://user:pass@localhost:5432/hockey';
+  const cases = [
+    [{}, 'filesystem'],
+    [{ CACHE_DATABASE_URL: url }, 'postgres'],
+    [{ CACHE_DATABASE_URL: url, CACHE_STORAGE: 'filesystem' }, 'filesystem'],
+    [{ CACHE_DATABASE_URL: url, CACHE_STORAGE: 'hybrid' }, 'hybrid'],
+    // Unknown modes are ignored.
+    [{ CACHE_DATABASE_URL: url, CACHE_STORAGE: 'redis' }, 'postgres'],
+  ];
+  for (const [env, expected] of cases) {
+    assert.equal(
+      loadCacheManager(env).getCacheStorageMode(),
+      expected,
+      JSON.stringify(env),
+    );
+  }
 });
 
 test('cache usage reports postgres bytes as the primary cache when configured', async () => {

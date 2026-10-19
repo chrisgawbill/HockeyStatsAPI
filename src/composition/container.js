@@ -33,6 +33,9 @@ const {
   createAfterActionReportService,
 } = require('#slices/afterActionReports/afterActionReportService.js');
 const {
+  createWeeklyPlayerReportService,
+} = require('#slices/weeklyPlayerReports/weeklyPlayerReportService.js');
+const {
   createPushNotificationService,
 } = require('#slices/pushNotifications/pushNotificationService.js');
 
@@ -74,9 +77,11 @@ function createContainer(overrides = {}) {
     ...platform,
     scheduleService,
   });
+  const weeklyPlayerReportService = createWeeklyPlayerReportService(platform);
   const pushNotificationService = createPushNotificationService({
     ...platform,
     afterActionReportService,
+    weeklyPlayerReportService,
   });
 
   return {
@@ -92,6 +97,7 @@ function createContainer(overrides = {}) {
     authService,
     boardGameStreakService,
     afterActionReportService,
+    weeklyPlayerReportService,
     pushNotificationService,
   };
 }

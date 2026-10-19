@@ -2,19 +2,8 @@ const assert = require('node:assert/strict');
 const { beforeEach, test } = require('node:test');
 const jwt = require('jsonwebtoken');
 
-const { makeTestApp, request: rawRequest } = require('./testApp.js');
+const { makeTestApp, jsonRequest: request } = require('./testApp.js');
 
-/** JSON bodies need a content-type for express.json() to parse them. */
-function request(app, path, options = {}) {
-  const headers = options.body
-    ? {
-        'content-type': 'application/json',
-        'content-length': String(Buffer.byteLength(options.body)),
-        ...options.headers,
-      }
-    : options.headers;
-  return rawRequest(app, path, { ...options, headers });
-}
 const sessionJwt = require('#platform/sessionJwt.js');
 const {
   createAfterActionReportService,
@@ -170,6 +159,10 @@ function fakeDb() {
         db.ledger.add(key);
         return { rows: [{ game_id: params[1] }] };
       }
+      if (sql.includes('INSERT INTO weekly_player_report_pushes')) {
+        db.weeklySeeded = (db.weeklySeeded ?? 0) + 1;
+        return { rows: [] };
+      }
       throw new Error(`Unexpected SQL: ${sql}`);
     },
   };
@@ -250,8 +243,9 @@ async function dispatch(ctx) {
   return response.body;
 }
 
-test('config reports enabled only with all VAPID vars', async () => {
-  const { push } = build();
+test('config reflects VAPID env; subscribe validates input, session, and config', async () => {
+  const ctx = build();
+  const { push } = ctx;
   assert.deepEqual((await request(push, '/api/push/config')).body, {
     enabled: true,
     publicKey: 'pub',
@@ -261,10 +255,8 @@ test('config reports enabled only with all VAPID vars', async () => {
     enabled: false,
     publicKey: null,
   });
-});
+  process.env.VAPID_SUBJECT = 'mailto:test@example.com';
 
-test('subscribe validates input, requires a session and push config', async () => {
-  const ctx = build();
   const post = (body, headers = authHeaders()) =>
     request(ctx.push, '/api/push/subscriptions', {
       method: 'POST',
@@ -289,7 +281,7 @@ test('subscribe validates input, requires a session and push config', async () =
   assert.equal((await post(subscribeBody())).status, 503);
 });
 
-test('subscribe upserts by endpoint to the caller and seeds the ledger', async () => {
+test('subscribe upserts by endpoint, seeds the ledger; unsubscribe removes only own rows', async () => {
   const ctx = build({ games: [game({ gameId: 100 }), game({ gameId: 101 })] });
   await ctx.afterActionReportService.addFavorite(7, 'TOR');
   await ctx.afterActionReportService.addFavorite(8, 'TOR');
@@ -312,17 +304,8 @@ test('subscribe upserts by endpoint to the caller and seeds the ledger', async (
   const result = await dispatch(ctx);
   assert.deepEqual(result, { users: 1, sent: 0, removed: 0 });
   assert.equal(ctx.sent.length, 0);
-});
 
-test("unsubscribe only deletes the caller's own subscription", async () => {
-  const ctx = build();
-  ctx.db.subs.push({
-    id: 1,
-    user_id: 7,
-    endpoint: ENDPOINT,
-    p256dh: 'p',
-    auth: 'a',
-  });
+  // Unsubscribe only deletes the caller's own row (user 8 owns it now).
   const del = (userId, endpoint) =>
     request(ctx.push, '/api/push/subscriptions', {
       method: 'DELETE',
@@ -330,11 +313,11 @@ test("unsubscribe only deletes the caller's own subscription", async () => {
       headers: authHeaders(userId),
     });
 
-  assert.equal((await del(8, ENDPOINT)).status, 204);
+  assert.equal((await del(7, ENDPOINT)).status, 204);
   assert.equal(ctx.db.subs.length, 1);
-  assert.equal((await del(7, ENDPOINT)).status, 204);
+  assert.equal((await del(8, ENDPOINT)).status, 204);
   assert.equal(ctx.db.subs.length, 0);
-  assert.equal((await del(7, ENDPOINT)).status, 204);
+  assert.equal((await del(8, ENDPOINT)).status, 204); // already gone
 });
 
 test('push-mute route updates the favorite and favorites expose pushMuted', async () => {
@@ -379,7 +362,7 @@ test('push-mute route updates the favorite and favorites expose pushMuted', asyn
   );
 });
 
-test("read route marks the token's game read and rejects other tokens", async () => {
+test("read route marks the token's game read; read and session tokens are not interchangeable", async () => {
   const ctx = build();
   const post = (token) =>
     request(ctx.push, '/api/push/read', {
@@ -410,9 +393,8 @@ test("read route marks the token's game read and rejects other tokens", async ()
   );
   assert.equal((await post(wrongSecret)).status, 401);
   assert.equal(ctx.db.reads.size, 0);
-});
 
-test('read tokens and session tokens are not interchangeable', async () => {
+  // Read and session tokens are not interchangeable.
   const readToken = sessionJwt.signReadToken({ userId: 7, gameId: 100 });
   const decoded = jwt.decode(readToken);
   assert.equal(decoded.purpose, 'aar-read');
@@ -430,7 +412,6 @@ test('read tokens and session tokens are not interchangeable', async () => {
   });
 
   // requireAuth rejects a read token presented as a session.
-  const ctx = build();
   const response = await request(ctx.reports, '/api/after-action-reports', {
     headers: { authorization: `Bearer ${readToken}` },
   });
@@ -469,7 +450,7 @@ async function setupUser(ctx, userId, teams, endpoints = [ENDPOINT]) {
   }
 }
 
-test('dispatch skips read, ledgered, old and all-muted games', async () => {
+test('dispatch skips read, ledgered, old and all-muted games, but not partly muted ones', async () => {
   const ctx = build({
     games: [
       game({ gameId: 1, homeTeam: 'TOR', awayTeam: 'MTL' }), // read
@@ -501,17 +482,16 @@ test('dispatch skips read, ledgered, old and all-muted games', async () => {
   // Unmuting later must not push the game that finished while muted.
   ctx.db.favorites.find((f) => f.team_tri_code === 'BOS').push_muted = false;
   assert.deepEqual(await dispatch(ctx), { users: 1, sent: 0, removed: 0 });
-});
 
-test('dispatch pushes when one of two favorites in a game is unmuted', async () => {
-  const ctx = build({
+  // A game pushes when at least one of its favorites is unmuted.
+  const partial = build({
     games: [game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL' })],
   });
-  await setupUser(ctx, 7, ['TOR', 'MTL']);
-  ctx.db.favorites.find((f) => f.team_tri_code === 'TOR').push_muted = true;
+  await setupUser(partial, 7, ['TOR', 'MTL']);
+  partial.db.favorites.find((f) => f.team_tri_code === 'TOR').push_muted = true;
 
-  assert.equal((await dispatch(ctx)).sent, 1);
-  assert.equal(ctx.sent.length, 1);
+  assert.equal((await dispatch(partial)).sent, 1);
+  assert.equal(partial.sent.length, 1);
 });
 
 test('dispatch sends one push per game to every device with the contract payload', async () => {
