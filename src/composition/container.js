@@ -31,6 +31,9 @@ const {
 const {
   createAfterActionReportService,
 } = require('#slices/afterActionReports/afterActionReportService.js');
+const {
+  createPushNotificationService,
+} = require('#slices/pushNotifications/pushNotificationService.js');
 
 /**
  * Composition root: the one place that knows which concrete platform adapters
@@ -69,6 +72,10 @@ function createContainer(overrides = {}) {
     ...platform,
     scheduleService,
   });
+  const pushNotificationService = createPushNotificationService({
+    ...platform,
+    afterActionReportService,
+  });
 
   return {
     ...platform,
@@ -82,6 +89,7 @@ function createContainer(overrides = {}) {
     authService,
     boardGameStreakService,
     afterActionReportService,
+    pushNotificationService,
   };
 }
 

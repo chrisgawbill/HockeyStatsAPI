@@ -119,6 +119,7 @@ function toFavorite(row) {
   return {
     triCode: row.team_tri_code,
     since: new Date(row.created_at).toISOString(),
+    pushMuted: Boolean(row.push_muted),
   };
 }
 
@@ -150,13 +151,13 @@ function createAfterActionReportService({
    * One failing team schedule must not empty the whole inbox, so each team is
    * settled independently and a failure contributes no games.
    */
-  async function loadGamesByTeam(triCodes) {
+  async function loadGamesByTeam(triCodes, { fresh = false } = {}) {
     const seasonId = seasons.getCurrentSeasonId();
     const settled = await Promise.allSettled(
       triCodes.map(async (triCode) => {
         const [season, recent] = await Promise.allSettled([
           scheduleService.getTeamSchedule(triCode, seasonId),
-          scheduleService.getRecentTeamGames(triCode),
+          scheduleService.getRecentTeamGames(triCode, { fresh }),
         ]);
         if (season.status === 'rejected' && recent.status === 'rejected') {
           throw season.reason;
@@ -182,15 +183,20 @@ function createAfterActionReportService({
     return gamesByTeam;
   }
 
-  async function listReports(userId) {
-    const favorites = await listFavorites(userId);
+  /**
+   * @param {number|string} userId
+   * @param {{ gamesByTeam?: Record<string, any[]>, favorites?: any[] }} [preloaded]
+   *   Lets push dispatch share one schedule load (fetched fresh) across users.
+   */
+  async function listReports(userId, preloaded = {}) {
+    const favorites = preloaded.favorites ?? (await listFavorites(userId));
     if (favorites.length === 0) {
       return { reports: [], unreadCount: 0 };
     }
 
-    const gamesByTeam = await loadGamesByTeam(
-      favorites.map((favorite) => favorite.triCode),
-    );
+    const gamesByTeam =
+      preloaded.gamesByTeam ??
+      (await loadGamesByTeam(favorites.map((favorite) => favorite.triCode)));
     const candidate = buildAfterActionReports({
       favorites,
       gamesByTeam,
@@ -207,6 +213,23 @@ function createAfterActionReportService({
 
   return {
     listFavorites,
+    loadGamesByTeam,
+
+    async setPushMuted(userId, triCode, muted) {
+      const normalized = normalizeTriCode(triCode);
+      if (typeof muted !== 'boolean') {
+        throw createError(400, 'muted must be a boolean.');
+      }
+      const updated = await withTransaction((client) =>
+        repository.updateFavoritePushMuted(client, {
+          userId,
+          triCode: normalized,
+          muted,
+        }),
+      );
+      if (!updated) throw createError(404, 'Team is not a favorite.');
+      return { favorites: await listFavorites(userId) };
+    },
 
     async addFavorite(userId, triCode) {
       const normalized = normalizeTriCode(triCode);

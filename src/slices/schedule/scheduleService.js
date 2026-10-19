@@ -235,8 +235,9 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * One club's games for the current NHL week, on a short TTL. The season
      * club schedule above is cached for 12 hours, which is too stale to notice
      * a game that just went final; After Action Reports overlay this on top.
+     * `{ fresh: true }` skips the cache read (push dispatch) but still refills it.
      */
-    async getRecentTeamGames(triCode) {
+    async getRecentTeamGames(triCode, { fresh = false } = {}) {
       const raw = await GetOrFetch(
         CACHE_TYPES.SCHEDULE,
         `team_${triCode}_week_now`,
@@ -244,7 +245,7 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           axiosNhl
             .get(`/club-schedule/${triCode}/week/now`)
             .then((r) => r.data),
-        { ttlMs: RECENT_TEAM_GAMES_TTL_MS },
+        { ttlMs: fresh ? 0 : RECENT_TEAM_GAMES_TTL_MS },
       );
       return { games: mapClubGames(raw) };
     },

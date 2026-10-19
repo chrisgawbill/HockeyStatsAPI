@@ -1,0 +1,633 @@
+const assert = require('node:assert/strict');
+const { beforeEach, test } = require('node:test');
+const jwt = require('jsonwebtoken');
+
+const { makeTestApp, request: rawRequest } = require('./testApp.js');
+
+/** JSON bodies need a content-type for express.json() to parse them. */
+function request(app, path, options = {}) {
+  const headers = options.body
+    ? {
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(options.body)),
+        ...options.headers,
+      }
+    : options.headers;
+  return rawRequest(app, path, { ...options, headers });
+}
+const sessionJwt = require('#platform/sessionJwt.js');
+const {
+  createAfterActionReportService,
+} = require('#slices/afterActionReports/afterActionReportService.js');
+const {
+  createPushNotificationService,
+} = require('#slices/pushNotifications/pushNotificationService.js');
+const {
+  createAfterActionReportsRouter,
+  createFavoritesRouter,
+} = require('#presentation/routes/afterActionReports.js');
+const { createPushRouter } = require('#presentation/routes/push.js');
+const { shouldDispatch } = require('../../bin/aar-push-cron.js');
+
+const SECRET = 'test-session-secret';
+const CRON = 'cron-secret-value';
+const ENDPOINT = 'https://push.example.com/send/abc';
+const NOW = Date.parse('2026-10-19T04:00:00Z');
+
+beforeEach(() => {
+  process.env.SESSION_JWT_SECRET = SECRET;
+  process.env.VAPID_PUBLIC_KEY = 'pub';
+  process.env.VAPID_PRIVATE_KEY = 'priv';
+  process.env.VAPID_SUBJECT = 'mailto:test@example.com';
+  process.env.CRON_SECRET = CRON;
+});
+
+function authHeaders(userId = 7) {
+  return { authorization: `Bearer ${sessionJwt.signSessionToken({ userId })}` };
+}
+
+function game(overrides) {
+  return {
+    gameId: 1,
+    date: '2026-10-18',
+    gameTime: '2026-10-19T00:00:00Z',
+    homeTeam: 'TOR',
+    homeLogo: 'tor.svg',
+    homeScore: 4,
+    awayTeam: 'MTL',
+    awayLogo: 'mtl.svg',
+    awayScore: 2,
+    periodType: 'REG',
+    isPlayoff: false,
+    gameState: 'OFF',
+    ...overrides,
+  };
+}
+
+/** In-memory Postgres stand-in covering every statement the slices issue. */
+function fakeDb() {
+  const db = {
+    favorites: [], // { user_id, team_tri_code, created_at, push_muted }
+    reads: new Set(),
+    subs: [], // { id, user_id, endpoint, p256dh, auth }
+    ledger: new Set(),
+    nextId: 1,
+  };
+  const client = {
+    async query(sql, params) {
+      if (sql.includes('SELECT team_tri_code')) {
+        return {
+          rows: db.favorites
+            .filter((f) => f.user_id === params[0])
+            .map((f) => ({ ...f })),
+        };
+      }
+      if (sql.includes('INSERT INTO favorite_teams')) {
+        if (
+          !db.favorites.some(
+            (f) => f.user_id === params[0] && f.team_tri_code === params[1],
+          )
+        ) {
+          db.favorites.push({
+            user_id: params[0],
+            team_tri_code: params[1],
+            created_at: '2026-10-01T00:00:00.000Z',
+            push_muted: false,
+          });
+        }
+        return { rows: [] };
+      }
+      if (sql.includes('UPDATE favorite_teams')) {
+        const row = db.favorites.find(
+          (f) => f.user_id === params[0] && f.team_tri_code === params[1],
+        );
+        if (row) row.push_muted = params[2];
+        return { rows: [], rowCount: row ? 1 : 0 };
+      }
+      if (sql.includes('FROM after_action_report_reads')) {
+        return {
+          rows: params[1]
+            .filter((id) => db.reads.has(`${params[0]}:${id}`))
+            .map((game_id) => ({ game_id: String(game_id) })),
+        };
+      }
+      if (sql.includes('INSERT INTO after_action_report_reads')) {
+        for (const id of params[1]) db.reads.add(`${params[0]}:${id}`);
+        return { rows: [] };
+      }
+      if (sql.includes('INSERT INTO push_subscriptions')) {
+        const [user_id, endpoint, p256dh, auth] = params;
+        const existing = db.subs.find((s) => s.endpoint === endpoint);
+        if (existing) Object.assign(existing, { user_id, p256dh, auth });
+        else db.subs.push({ id: db.nextId++, user_id, endpoint, p256dh, auth });
+        return { rows: [] };
+      }
+      if (sql.includes('DELETE FROM push_subscriptions WHERE user_id')) {
+        const before = db.subs.length;
+        db.subs = db.subs.filter(
+          (s) => !(s.user_id === params[0] && s.endpoint === params[1]),
+        );
+        return { rows: [], rowCount: before - db.subs.length };
+      }
+      if (sql.includes('DELETE FROM push_subscriptions WHERE id')) {
+        db.subs = db.subs.filter((s) => s.id !== params[0]);
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT DISTINCT user_id')) {
+        return {
+          rows: [...new Set(db.subs.map((s) => s.user_id))].map((user_id) => ({
+            user_id,
+          })),
+        };
+      }
+      if (sql.includes('FROM push_subscriptions')) {
+        return {
+          rows: db.subs
+            .filter((s) => s.user_id === params[0])
+            .map((s) => ({ ...s })),
+        };
+      }
+      if (
+        sql.includes('SELECT game_id') &&
+        sql.includes('after_action_report_pushes')
+      ) {
+        return {
+          rows: params[1]
+            .filter((id) => db.ledger.has(`${params[0]}:${id}`))
+            .map((game_id) => ({ game_id: String(game_id) })),
+        };
+      }
+      if (
+        sql.includes('INSERT INTO after_action_report_pushes') &&
+        sql.includes('UNNEST')
+      ) {
+        for (const id of params[1]) db.ledger.add(`${params[0]}:${id}`);
+        return { rows: [] };
+      }
+      if (sql.includes('INSERT INTO after_action_report_pushes')) {
+        const key = `${params[0]}:${params[1]}`;
+        if (db.ledger.has(key)) return { rows: [] };
+        db.ledger.add(key);
+        return { rows: [{ game_id: params[1] }] };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  };
+  db.withTransaction = (fn) => fn(client);
+  return db;
+}
+
+function build({ games, sendImpl } = {}) {
+  const db = fakeDb();
+  const scheduleCalls = { season: [], recent: [] };
+  const gameList = games ?? [game({ gameId: 100 })];
+  const scheduleService = {
+    getTeamSchedule: async (triCode) => {
+      scheduleCalls.season.push(triCode);
+      return { games: [] };
+    },
+    getRecentTeamGames: async (triCode, options) => {
+      scheduleCalls.recent.push([triCode, Boolean(options?.fresh)]);
+      return {
+        games: gameList.filter(
+          (g) => g.homeTeam === triCode || g.awayTeam === triCode,
+        ),
+      };
+    },
+  };
+  const afterActionReportService = createAfterActionReportService({
+    withTransaction: db.withTransaction,
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    scheduleService,
+  });
+  const sent = [];
+  const webPush = {
+    sendNotification: async (subscription, payload, options) => {
+      if (sendImpl) await sendImpl(subscription);
+      sent.push({ subscription, payload: JSON.parse(payload), options });
+    },
+  };
+  const pushNotificationService = createPushNotificationService({
+    withTransaction: db.withTransaction,
+    sessionJwt,
+    afterActionReportService,
+    webPush,
+    now: () => NOW,
+  });
+  const pass = (req, res, next) => next();
+  return {
+    db,
+    sent,
+    scheduleCalls,
+    afterActionReportService,
+    pushNotificationService,
+    push: makeTestApp(
+      '/api/push',
+      createPushRouter({ pushNotificationService, dispatchRateLimiter: pass }),
+    ),
+    favorites: makeTestApp(
+      '/api/favorites',
+      createFavoritesRouter({ afterActionReportService }),
+    ),
+    reports: makeTestApp(
+      '/api/after-action-reports',
+      createAfterActionReportsRouter({ afterActionReportService }),
+    ),
+  };
+}
+
+const json = (body) => JSON.stringify(body);
+const subscribeBody = (endpoint = ENDPOINT) =>
+  json({ endpoint, keys: { p256dh: 'p', auth: 'a' } });
+const cronHeaders = (secret = CRON) => ({ authorization: `Bearer ${secret}` });
+
+async function dispatch(ctx) {
+  const response = await request(ctx.push, '/api/push/dispatch', {
+    method: 'POST',
+    headers: cronHeaders(),
+  });
+  assert.equal(response.status, 200);
+  return response.body;
+}
+
+test('config reports enabled only with all VAPID vars', async () => {
+  const { push } = build();
+  assert.deepEqual((await request(push, '/api/push/config')).body, {
+    enabled: true,
+    publicKey: 'pub',
+  });
+  delete process.env.VAPID_SUBJECT;
+  assert.deepEqual((await request(push, '/api/push/config')).body, {
+    enabled: false,
+    publicKey: null,
+  });
+});
+
+test('subscribe validates input, requires a session and push config', async () => {
+  const ctx = build();
+  const post = (body, headers = authHeaders()) =>
+    request(ctx.push, '/api/push/subscriptions', {
+      method: 'POST',
+      body,
+      headers,
+    });
+
+  assert.equal((await post(subscribeBody(), {})).status, 401);
+  assert.equal((await post(json({}))).status, 400);
+  assert.equal(
+    (await post(subscribeBody('http://insecure.example.com/x'))).status,
+    400,
+  );
+  assert.equal((await post(subscribeBody('not a url'))).status, 400);
+  assert.equal(
+    (await post(json({ endpoint: ENDPOINT, keys: { p256dh: 'p' } }))).status,
+    400,
+  );
+  assert.equal(ctx.db.subs.length, 0);
+
+  delete process.env.VAPID_PRIVATE_KEY;
+  assert.equal((await post(subscribeBody())).status, 503);
+});
+
+test('subscribe upserts by endpoint to the caller and seeds the ledger', async () => {
+  const ctx = build({ games: [game({ gameId: 100 }), game({ gameId: 101 })] });
+  await ctx.afterActionReportService.addFavorite(7, 'TOR');
+  await ctx.afterActionReportService.addFavorite(8, 'TOR');
+
+  const post = (userId, body = subscribeBody()) =>
+    request(ctx.push, '/api/push/subscriptions', {
+      method: 'POST',
+      body,
+      headers: authHeaders(userId),
+    });
+  assert.equal((await post(7)).status, 204);
+  assert.deepEqual([...ctx.db.ledger].sort(), ['7:100', '7:101']);
+
+  // Same endpoint from another account moves the row instead of duplicating.
+  assert.equal((await post(8)).status, 204);
+  assert.equal(ctx.db.subs.length, 1);
+  assert.equal(ctx.db.subs[0].user_id, 8);
+
+  // Seeded reports are never pushed.
+  const result = await dispatch(ctx);
+  assert.deepEqual(result, { users: 1, sent: 0, removed: 0 });
+  assert.equal(ctx.sent.length, 0);
+});
+
+test("unsubscribe only deletes the caller's own subscription", async () => {
+  const ctx = build();
+  ctx.db.subs.push({
+    id: 1,
+    user_id: 7,
+    endpoint: ENDPOINT,
+    p256dh: 'p',
+    auth: 'a',
+  });
+  const del = (userId, endpoint) =>
+    request(ctx.push, '/api/push/subscriptions', {
+      method: 'DELETE',
+      body: json({ endpoint }),
+      headers: authHeaders(userId),
+    });
+
+  assert.equal((await del(8, ENDPOINT)).status, 204);
+  assert.equal(ctx.db.subs.length, 1);
+  assert.equal((await del(7, ENDPOINT)).status, 204);
+  assert.equal(ctx.db.subs.length, 0);
+  assert.equal((await del(7, ENDPOINT)).status, 204);
+});
+
+test('push-mute route updates the favorite and favorites expose pushMuted', async () => {
+  const ctx = build();
+  await ctx.afterActionReportService.addFavorite(7, 'TOR');
+  const put = (path, body, headers = authHeaders()) =>
+    request(ctx.favorites, path, { method: 'PUT', body, headers });
+
+  assert.equal(
+    (await put('/api/favorites/TOR/push-mute', json({ muted: true }), {}))
+      .status,
+    401,
+  );
+  assert.equal(
+    (await put('/api/favorites/TOR/push-mute', json({ muted: 'yes' }))).status,
+    400,
+  );
+  assert.equal(
+    (await put('/api/favorites/TOR/push-mute', json({}))).status,
+    400,
+  );
+  assert.equal(
+    (await put('/api/favorites/BOS/push-mute', json({ muted: true }))).status,
+    404,
+  );
+
+  const muted = await put(
+    '/api/favorites/tor/push-mute',
+    json({ muted: true }),
+  );
+  assert.equal(muted.status, 200);
+  assert.equal(muted.body.favorites[0].pushMuted, true);
+
+  const list = await request(ctx.favorites, '/api/favorites', {
+    headers: authHeaders(),
+  });
+  assert.equal(list.body.favorites[0].pushMuted, true);
+  const added = await put('/api/favorites/MTL', json({}));
+  assert.equal(
+    added.body.favorites.find((f) => f.triCode === 'MTL').pushMuted,
+    false,
+  );
+});
+
+test("read route marks the token's game read and rejects other tokens", async () => {
+  const ctx = build();
+  const post = (token) =>
+    request(ctx.push, '/api/push/read', {
+      method: 'POST',
+      body: json({ token }),
+    });
+
+  const valid = sessionJwt.signReadToken({ userId: 7, gameId: 100 });
+  assert.equal((await post(valid)).status, 204);
+  assert.ok(ctx.db.reads.has('7:100'));
+
+  ctx.db.reads.clear();
+  assert.equal(
+    (await post(sessionJwt.signSessionToken({ userId: 7 }))).status,
+    401,
+  );
+  assert.equal((await post('garbage')).status, 401);
+  assert.equal((await post(undefined)).status, 401);
+  const expired = jwt.sign(
+    { purpose: 'aar-read', sub: '7', gameId: 100 },
+    SECRET,
+    { expiresIn: -10 },
+  );
+  assert.equal((await post(expired)).status, 401);
+  const wrongSecret = jwt.sign(
+    { purpose: 'aar-read', sub: '7', gameId: 100 },
+    'other',
+  );
+  assert.equal((await post(wrongSecret)).status, 401);
+  assert.equal(ctx.db.reads.size, 0);
+});
+
+test('read tokens and session tokens are not interchangeable', async () => {
+  const readToken = sessionJwt.signReadToken({ userId: 7, gameId: 100 });
+  const decoded = jwt.decode(readToken);
+  assert.equal(decoded.purpose, 'aar-read');
+  assert.equal(decoded.sub, '7');
+  assert.equal(decoded.gameId, 100);
+  assert.ok(decoded.exp - decoded.iat === 30 * 24 * 60 * 60);
+
+  assert.throws(() => sessionJwt.verifySessionToken(readToken));
+  assert.throws(() =>
+    sessionJwt.verifyReadToken(sessionJwt.signSessionToken({ userId: 7 })),
+  );
+  assert.deepEqual(sessionJwt.verifyReadToken(readToken), {
+    userId: '7',
+    gameId: 100,
+  });
+
+  // requireAuth rejects a read token presented as a session.
+  const ctx = build();
+  const response = await request(ctx.reports, '/api/after-action-reports', {
+    headers: { authorization: `Bearer ${readToken}` },
+  });
+  assert.equal(response.status, 401);
+});
+
+test('dispatch requires the cron secret and configuration', async () => {
+  const ctx = build();
+  const post = (headers) =>
+    request(ctx.push, '/api/push/dispatch', { method: 'POST', headers });
+
+  assert.equal((await post({})).status, 401);
+  assert.equal((await post(cronHeaders('wrong'))).status, 401);
+  assert.equal((await post(cronHeaders(`${CRON}x`))).status, 401);
+  assert.equal((await post({ authorization: CRON })).status, 401);
+  assert.equal((await post(cronHeaders())).status, 200);
+
+  delete process.env.CRON_SECRET;
+  assert.equal((await post(cronHeaders())).status, 503);
+  process.env.CRON_SECRET = CRON;
+  delete process.env.VAPID_PUBLIC_KEY;
+  assert.equal((await post(cronHeaders())).status, 503);
+});
+
+async function setupUser(ctx, userId, teams, endpoints = [ENDPOINT]) {
+  for (const team of teams)
+    await ctx.afterActionReportService.addFavorite(userId, team);
+  for (const endpoint of endpoints) {
+    ctx.db.subs.push({
+      id: ctx.db.nextId++,
+      user_id: userId,
+      endpoint,
+      p256dh: 'p',
+      auth: 'a',
+    });
+  }
+}
+
+test('dispatch skips read, ledgered, old and all-muted games', async () => {
+  const ctx = build({
+    games: [
+      game({ gameId: 1, homeTeam: 'TOR', awayTeam: 'MTL' }), // read
+      game({ gameId: 2, homeTeam: 'TOR', awayTeam: 'MTL' }), // ledgered
+      game({
+        gameId: 3,
+        homeTeam: 'TOR',
+        awayTeam: 'MTL',
+        gameTime: '2026-10-18T15:00:00Z',
+      }), // >12h old
+      game({ gameId: 4, homeTeam: 'BOS', awayTeam: 'NYR' }), // muted team
+      game({ gameId: 5, homeTeam: 'TOR', awayTeam: 'MTL' }), // sendable
+    ],
+  });
+  await setupUser(ctx, 7, ['TOR', 'BOS']);
+  ctx.db.favorites.find((f) => f.team_tri_code === 'BOS').push_muted = true;
+  ctx.db.reads.add('7:1');
+  ctx.db.ledger.add('7:2');
+
+  const result = await dispatch(ctx);
+  assert.deepEqual(result, { users: 1, sent: 1, removed: 0 });
+  assert.deepEqual(
+    ctx.sent.map((s) => s.payload.gameId),
+    [5],
+  );
+  assert.ok(ctx.db.ledger.has('7:5'));
+});
+
+test('dispatch pushes when one of two favorites in a game is unmuted', async () => {
+  const ctx = build({
+    games: [game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL' })],
+  });
+  await setupUser(ctx, 7, ['TOR', 'MTL']);
+  ctx.db.favorites.find((f) => f.team_tri_code === 'TOR').push_muted = true;
+
+  assert.equal((await dispatch(ctx)).sent, 1);
+  assert.equal(ctx.sent.length, 1);
+});
+
+test('dispatch sends one push per game to every device with the contract payload', async () => {
+  const ctx = build({
+    games: [
+      game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL', periodType: 'OT' }),
+    ],
+  });
+  await setupUser(
+    ctx,
+    7,
+    ['TOR', 'MTL'],
+    [ENDPOINT, 'https://push.example.com/send/two'],
+  );
+
+  const result = await dispatch(ctx);
+  assert.deepEqual(result, { users: 1, sent: 2, removed: 0 });
+  assert.deepEqual(ctx.sent.map((s) => s.subscription.endpoint).sort(), [
+    ENDPOINT,
+    'https://push.example.com/send/two',
+  ]);
+  const { payload, options } = ctx.sent[0];
+  assert.equal(payload.title, 'After Action Report');
+  assert.equal(payload.body, 'MTL 2 @ TOR 4 (OT)');
+  assert.equal(payload.gameId, 9);
+  assert.equal(payload.tag, 'aar-9');
+  assert.deepEqual(sessionJwt.verifyReadToken(payload.readToken), {
+    userId: '7',
+    gameId: 9,
+  });
+  assert.equal(options.TTL, 6 * 60 * 60);
+  assert.equal(options.urgency, 'normal');
+
+  // A second dispatch sends nothing.
+  assert.deepEqual(await dispatch(ctx), { users: 1, sent: 0, removed: 0 });
+  assert.equal(ctx.sent.length, 2);
+});
+
+test('dispatch removes subscriptions the push service reports gone', async () => {
+  const gone = 'https://push.example.com/send/gone';
+  const ctx = build({
+    games: [game({ gameId: 9 })],
+    sendImpl: async (subscription) => {
+      if (subscription.endpoint === gone)
+        throw Object.assign(new Error('gone'), { statusCode: 410 });
+      if (subscription.endpoint.endsWith('/boom'))
+        throw Object.assign(new Error('boom'), { statusCode: 500 });
+    },
+  });
+  await setupUser(
+    ctx,
+    7,
+    ['TOR'],
+    [gone, 'https://push.example.com/send/boom', ENDPOINT],
+  );
+
+  const errors = [];
+  const original = console.error;
+  console.error = (...args) => errors.push(args);
+  let result;
+  try {
+    result = await dispatch(ctx);
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(result, { users: 1, sent: 1, removed: 1 });
+  assert.equal(ctx.db.subs.length, 2);
+  assert.ok(!ctx.db.subs.some((s) => s.endpoint === gone));
+  assert.equal(errors.length, 1);
+});
+
+test('dispatch loads each distinct team schedule once, fresh', async () => {
+  const ctx = build({
+    games: [game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL' })],
+  });
+  await setupUser(ctx, 7, ['TOR', 'MTL'], [ENDPOINT]);
+  await setupUser(ctx, 8, ['TOR'], ['https://push.example.com/send/u8']);
+  await setupUser(ctx, 9, ['MTL'], ['https://push.example.com/send/u9']);
+
+  const result = await dispatch(ctx);
+  assert.deepEqual(result, { users: 3, sent: 3, removed: 0 });
+  assert.deepEqual(ctx.scheduleCalls.season.sort(), ['MTL', 'TOR']);
+  assert.deepEqual(ctx.scheduleCalls.recent.sort(), [
+    ['MTL', true],
+    ['TOR', true],
+  ]);
+});
+
+test('shouldDispatch covers live, recent final, old final and upcoming games', () => {
+  const now = Date.parse('2026-10-19T04:00:00Z');
+  const hoursAgo = (h) => new Date(now - h * 3600 * 1000).toISOString();
+
+  assert.equal(shouldDispatch([], now), false);
+  assert.equal(shouldDispatch(undefined, now), false);
+  assert.equal(
+    shouldDispatch([{ gameState: 'LIVE', startTimeUTC: hoursAgo(1) }], now),
+    true,
+  );
+  assert.equal(
+    shouldDispatch([{ gameState: 'CRIT', startTimeUTC: hoursAgo(2) }], now),
+    true,
+  );
+  assert.equal(
+    shouldDispatch([{ gameState: 'FINAL', startTimeUTC: hoursAgo(3) }], now),
+    true,
+  );
+  assert.equal(
+    shouldDispatch([{ gameState: 'OFF', startTimeUTC: hoursAgo(4.4) }], now),
+    true,
+  );
+  assert.equal(
+    shouldDispatch([{ gameState: 'OFF', startTimeUTC: hoursAgo(4.6) }], now),
+    false,
+  );
+  assert.equal(
+    shouldDispatch([{ gameState: 'FUT', startTimeUTC: hoursAgo(-2) }], now),
+    false,
+  );
+  assert.equal(
+    shouldDispatch([{ gameState: 'PRE', startTimeUTC: hoursAgo(0) }], now),
+    false,
+  );
+  assert.equal(shouldDispatch([{ gameState: 'FINAL' }], now), false);
+});
