@@ -17,4 +17,15 @@ var axiosNhlGoalie = axios.create({
   timeout: 10000,
 });
 
-module.exports = { axiosNhl, axiosNhlTeam, axiosNhlStats, axiosNhlGoalie };
+var axiosNhlShifts = axios.create({
+  baseURL: 'https://api.nhle.com/stats/rest/en',
+  timeout: 10000,
+});
+
+module.exports = {
+  axiosNhl,
+  axiosNhlTeam,
+  axiosNhlStats,
+  axiosNhlGoalie,
+  axiosNhlShifts,
+};
