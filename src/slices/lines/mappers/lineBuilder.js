@@ -183,6 +183,78 @@ function assignSlots(ids, slots, naturalSlot, toi) {
   return slots.map((slot) => ({ id: bySlot.get(slot), slot }));
 }
 
+const MIN_CENTER_FACEOFFS = 3;
+
+/**
+ * Faceoffs taken (wins + losses) per player. Accepts a Map of playerId ->
+ * count, or raw play-by-play plays (non-faceoff plays are ignored).
+ */
+function faceoffCounts(faceoffs) {
+  if (faceoffs instanceof Map) return faceoffs;
+  const counts = new Map();
+  const bump = (id) => {
+    if (id == null) return;
+    counts.set(Number(id), (counts.get(Number(id)) ?? 0) + 1);
+  };
+  for (const play of Array.isArray(faceoffs) ? faceoffs : []) {
+    if (play?.typeDescKey !== 'faceoff') continue;
+    bump(play.details?.winningPlayerId);
+    bump(play.details?.losingPlayerId);
+  }
+  return counts;
+}
+
+/** Fill the wings: natural position, then shooting hand, then TOI order. */
+function assignWings(ids, roster, toi) {
+  const [first, second] = [...ids].sort((a, b) => toi.get(b) - toi.get(a));
+  const cost = (id, slot) => {
+    const p = roster.get(id);
+    const nat = FORWARD_NATURAL[p.positionCode];
+    const hand = FORWARD_NATURAL[p.shootsCatches];
+    return (nat === slot ? 0 : 100) + (hand === slot ? 0 : 1);
+  };
+  const lwFirst = cost(first, 'LW') + cost(second, 'RW');
+  const rwFirst = cost(first, 'RW') + cost(second, 'LW');
+  return rwFirst < lwFirst
+    ? { LW: second, RW: first }
+    : { LW: first, RW: second };
+}
+
+/** Forward line slots, centered on the faceoff leader when there is one. */
+function assignForwardSlots(ids, roster, toi, counts, naturalSlot) {
+  const taken = (id) => counts.get(id) ?? 0;
+  const byFaceoffs = [...ids].sort((a, b) => taken(b) - taken(a));
+  const clearLeader =
+    taken(byFaceoffs[0]) >= MIN_CENTER_FACEOFFS &&
+    taken(byFaceoffs[0]) > taken(byFaceoffs[1]);
+  let centerId = null;
+  if (clearLeader) {
+    centerId = byFaceoffs[0];
+  } else if (!ids.some((id) => naturalSlot(id) === 'C')) {
+    // No natural center: positionCode C, then most faceoffs, then TOI.
+    centerId = [...ids].sort(
+      (a, b) =>
+        Number(roster.get(b).positionCode === 'C') -
+          Number(roster.get(a).positionCode === 'C') ||
+        taken(b) - taken(a) ||
+        toi.get(b) - toi.get(a),
+    )[0];
+  }
+  if (centerId == null) {
+    return assignSlots(ids, FORWARD_SLOT_ORDER, naturalSlot, toi);
+  }
+  const wings = assignWings(
+    ids.filter((id) => id !== centerId),
+    roster,
+    toi,
+  );
+  return [
+    { id: centerId, slot: 'C' },
+    { id: wings.LW, slot: 'LW' },
+    { id: wings.RW, slot: 'RW' },
+  ];
+}
+
 // Highest-TOI player prefers the "first" slot tried, so for ties a lone C ends
 // up in C and extra centers move to the wings.
 const FORWARD_SLOT_ORDER = ['C', 'LW', 'RW'];
@@ -199,15 +271,17 @@ function emptyLines() {
 }
 
 /**
- * @param {{ shifts: any[], rawRoster: any, triCode: string }} input
+ * @param {{ shifts: any[], rawRoster: any, triCode: string, faceoffs?: Map<number, number>|any[] }} input
+ *   faceoffs (optional): faceoffs taken per playerId, or raw faceoff plays.
  * @returns {{ forwardLines: any[], defensePairs: any[], goalies: { starterId: number|null } } | null}
  *   null when there are no usable shift rows for the team.
  */
-function buildLines({ shifts, rawRoster, triCode }) {
+function buildLines({ shifts, rawRoster, triCode, faceoffs }) {
   const intervals = buildIntervals(shifts, triCode);
   if (intervals.size === 0) return null;
 
   const roster = rosterPlayers(rawRoster);
+  const counts = faceoffCounts(faceoffs);
   const toi = new Map([...intervals].map(([id, list]) => [id, total(list)]));
   const onRoster = (group) =>
     [...intervals.keys()]
@@ -226,7 +300,13 @@ function buildLines({ shifts, rawRoster, triCode }) {
     MAX_FORWARD_LINES,
     intervals,
   ).map((ids) => {
-    const players = assignSlots(ids, FORWARD_SLOT_ORDER, forwardNatural, toi);
+    const players = assignForwardSlots(
+      ids,
+      roster,
+      toi,
+      counts,
+      forwardNatural,
+    );
     const order = ['LW', 'C', 'RW'];
     return {
       players: order.map((slot) => players.find((p) => p.slot === slot)),
@@ -256,6 +336,7 @@ function buildLines({ shifts, rawRoster, triCode }) {
 module.exports = {
   buildLines,
   emptyLines,
+  faceoffCounts,
   isShiftRow,
   parseClock,
   SHIFT_TYPE_CODE,
