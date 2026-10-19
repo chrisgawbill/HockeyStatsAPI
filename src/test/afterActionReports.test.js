@@ -43,7 +43,7 @@ function game(overrides) {
   };
 }
 
-test('buildAfterActionReports only reports completed games since favoriting', () => {
+test('buildAfterActionReports reports completed games since favoriting, newest first, capped', () => {
   const { reports, unreadCount } = buildAfterActionReports({
     favorites: [{ triCode: 'TOR', since: '2026-10-15T18:30:00.000Z' }],
     gamesByTeam: {
@@ -66,27 +66,41 @@ test('buildAfterActionReports only reports completed games since favoriting', ()
     ],
   );
   assert.equal(unreadCount, 1);
-});
 
-test('buildAfterActionReports keeps tonight\'s game when favorited after midnight UTC', () => {
-  // 8:30pm Eastern on Oct 18 is already Oct 19 in UTC.
+  // Favorited at 8:30pm Eastern (already Oct 19 UTC): tonight's game still
+  // counts, last night's does not.
   const favorites = [{ triCode: 'TOR', since: '2026-10-19T00:30:00.000Z' }];
   const tonight = game({ gameId: 1, date: '2026-10-18', gameTime: '2026-10-18T23:00:00Z' });
   const lastNight = game({ gameId: 2, date: '2026-10-17', gameTime: '2026-10-17T23:00:00Z' });
 
-  const { reports } = buildAfterActionReports({
+  const { reports: late } = buildAfterActionReports({
     favorites,
     gamesByTeam: { TOR: [tonight, lastNight] },
     readGameIds: [],
   });
 
   assert.deepEqual(
-    reports.map((r) => r.gameId),
+    late.map((r) => r.gameId),
     [1],
   );
+
+  // The inbox is capped and keeps the newest.
+  const games = Array.from({ length: 30 }, (_, i) =>
+    game({ gameId: i + 1, date: `2026-11-${String(i + 1).padStart(2, '0')}` }),
+  );
+  const { reports: capped } = buildAfterActionReports({
+    favorites: [{ triCode: 'TOR', since: '2026-10-01T00:00:00.000Z' }],
+    gamesByTeam: { TOR: games },
+    readGameIds: [],
+    limit: 25,
+  });
+
+  assert.equal(capped.length, 25);
+  assert.equal(capped[0].gameId, 30);
 });
 
-test('buildAfterActionReports merges a game between two favorites into one report', () => {
+
+test('a game between two favorites is one report; recent copies override season copies', () => {
   const shared = game({ gameId: 9 });
   const { reports } = buildAfterActionReports({
     favorites: [
@@ -99,24 +113,8 @@ test('buildAfterActionReports merges a game between two favorites into one repor
 
   assert.equal(reports.length, 1);
   assert.deepEqual(reports[0].favoriteTeams, ['TOR', 'MTL']);
-});
 
-test('buildAfterActionReports caps the inbox and keeps the newest', () => {
-  const games = Array.from({ length: 30 }, (_, i) =>
-    game({ gameId: i + 1, date: `2026-11-${String(i + 1).padStart(2, '0')}` }),
-  );
-  const { reports } = buildAfterActionReports({
-    favorites: [{ triCode: 'TOR', since: '2026-10-01T00:00:00.000Z' }],
-    gamesByTeam: { TOR: games },
-    readGameIds: [],
-    limit: 25,
-  });
-
-  assert.equal(reports.length, 25);
-  assert.equal(reports[0].gameId, 30);
-});
-
-test('mergeTeamGames prefers the fresher recent copy of a game', () => {
+  // mergeTeamGames prefers the fresher recent copy of a game.
   const merged = mergeTeamGames(
     [game({ gameId: 1, gameState: 'LIVE' }), game({ gameId: 2 })],
     [game({ gameId: 1, gameState: 'OFF' })],
@@ -125,6 +123,8 @@ test('mergeTeamGames prefers the fresher recent copy of a game', () => {
   assert.equal(merged.length, 2);
   assert.equal(merged.find((g) => g.gameId === 1).gameState, 'OFF');
 });
+
+
 
 /** In-memory stand-in for the two tables, driven through the real repository SQL shape. */
 function fakeStore() {
@@ -194,7 +194,7 @@ function buildService({ scheduleService } = {}) {
   return { service, store };
 }
 
-test('service favorites round-trip, normalizes tri-codes, and rejects bad ones', async () => {
+test('service favorites round-trip with tri-code validation, and reports track read state', async () => {
   const { service } = buildService();
 
   const added = await service.addFavorite(7, 'tor');
@@ -207,13 +207,8 @@ test('service favorites round-trip, normalizes tri-codes, and rejects bad ones',
 
   await assert.rejects(service.addFavorite(7, 'TORONTO'), { status: 400 });
 
-  const removed = await service.removeFavorite(7, 'TOR');
-  assert.deepEqual(removed.favorites, []);
-});
 
-test('service lists reports with read state and marks them read', async () => {
-  const { service } = buildService();
-  await service.addFavorite(7, 'TOR');
+  // Reports carry read state and can be marked read one by one or all at once.
 
   let inbox = await service.listReports(7);
   assert.deepEqual(
@@ -232,7 +227,11 @@ test('service lists reports with read state and marks them read', async () => {
   assert.equal((await service.listReports(7)).unreadCount, 0);
 
   await assert.rejects(service.markRead(7, 'abc'), { status: 400 });
+
+  const removed = await service.removeFavorite(7, 'TOR');
+  assert.deepEqual(removed.favorites, []);
 });
+
 
 test('service returns an empty inbox without favorites and survives a failed team', async () => {
   const { service } = buildService({
@@ -359,3 +358,4 @@ test('routes pass the session user through to the service', async () => {
     ['readAll', 7],
   ]);
 });
+

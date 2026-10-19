@@ -38,35 +38,23 @@ function makeService(axiosGet, currentSeasonId) {
   });
 }
 
-test('getSeasonSchedule walks the full season (Sept 1 - next June 30) for the current season', async () => {
-  const axios = makeRecordingAxios();
-  const service = makeService(axios, '20262027');
-
-  await service.getSeasonSchedule('20262027');
-
-  assert.equal(axios.requestedDates[0], '2026-09-01');
-  const last = axios.requestedDates[axios.requestedDates.length - 1];
+test('getSeasonSchedule walks Sept 1 - next June 30 for current and past seasons alike', async () => {
+  const lastWeekOf = (dates) => dates[dates.length - 1];
+  const current = makeRecordingAxios();
+  await makeService(current, '20262027').getSeasonSchedule('20262027');
+  assert.equal(current.requestedDates[0], '2026-09-01');
   // Weekly steps of 7 days from Sept 1 land within the final week of June.
+  const last = lastWeekOf(current.requestedDates);
   assert.ok(last >= '2027-06-24' && last <= '2027-06-30', `got ${last}`);
-});
 
-test('getSeasonSchedule walks the same full-season range for a past season', async () => {
-  const axios = makeRecordingAxios();
-  const service = makeService(axios, '20262027');
+  const past = makeRecordingAxios();
+  await makeService(past, '20262027').getSeasonSchedule('20242025');
+  assert.equal(past.requestedDates[0], '2024-09-01');
+  const pastLast = lastWeekOf(past.requestedDates);
+  assert.ok(pastLast >= '2025-06-24' && pastLast <= '2025-06-30');
 
-  await service.getSeasonSchedule('20242025');
-
-  assert.equal(axios.requestedDates[0], '2024-09-01');
-  const last = axios.requestedDates[axios.requestedDates.length - 1];
-  assert.ok(last >= '2025-06-24' && last <= '2025-06-30', `got ${last}`);
-});
-
-test('getSeasonSchedule requests the identical range whether or not the season is current', async () => {
-  const axiosCurrent = makeRecordingAxios();
-  const axiosPast = makeRecordingAxios();
-
-  await makeService(axiosCurrent, '20262027').getSeasonSchedule('20262027');
-  await makeService(axiosPast, '20999999').getSeasonSchedule('20262027');
-
-  assert.deepEqual(axiosCurrent.requestedDates, axiosPast.requestedDates);
+  // The range does not depend on whether the season is current.
+  const notCurrent = makeRecordingAxios();
+  await makeService(notCurrent, '20999999').getSeasonSchedule('20262027');
+  assert.deepEqual(notCurrent.requestedDates, current.requestedDates);
 });

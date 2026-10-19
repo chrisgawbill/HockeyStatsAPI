@@ -23,42 +23,6 @@ function expiredToken(userId = 'user-1') {
   );
 }
 
-test('requireAuth rejects requests with no Authorization header', async () => {
-  const app = buildProtectedApp();
-  const response = await request(app, '/protected');
-
-  assert.equal(response.status, 401);
-  assert.deepEqual(response.body, { error: 'Unauthorized' });
-});
-
-test('requireAuth rejects an invalid (malformed) JWT', async () => {
-  const app = buildProtectedApp();
-  const response = await request(app, '/protected', {
-    headers: { authorization: 'Bearer not-a-real-jwt' },
-  });
-
-  assert.equal(response.status, 401);
-});
-
-test('requireAuth rejects an expired JWT', async () => {
-  const app = buildProtectedApp();
-  const response = await request(app, '/protected', {
-    headers: { authorization: `Bearer ${expiredToken()}` },
-  });
-
-  assert.equal(response.status, 401);
-});
-
-test('requireAuth accepts a valid JWT and attaches req.userId', async () => {
-  const app = buildProtectedApp();
-  const response = await request(app, '/protected', {
-    headers: { authorization: `Bearer ${validToken('user-42')}` },
-  });
-
-  assert.equal(response.status, 200);
-  assert.equal(response.body.userId, 'user-42');
-});
-
 function buildProtectedApp() {
   const express = require('express');
   const app = express();
@@ -72,53 +36,55 @@ function buildProtectedApp() {
   return app;
 }
 
-test('unauthenticated GET /streak is rejected with 401', async () => {
-  const router = createBoardGameRouter({
-    boardGameStreakService: {
-      getStreakForUser: async () => {
-        throw new Error('should not be called without auth');
-      },
-    },
-  });
-  const app = makeTestApp('/api/board-game', router);
-  const response = await request(app, '/api/board-game/streak');
+test('requireAuth rejects missing, malformed, and expired tokens and attaches req.userId', async () => {
+  const app = buildProtectedApp();
+  const missing = await request(app, '/protected');
+  assert.equal(missing.status, 401);
+  assert.deepEqual(missing.body, { error: 'Unauthorized' });
 
-  assert.equal(response.status, 401);
+  for (const token of ['not-a-real-jwt', expiredToken()]) {
+    const response = await request(app, '/protected', {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 401);
+  }
+
+  const ok = await request(app, '/protected', {
+    headers: { authorization: `Bearer ${validToken('user-42')}` },
+  });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.userId, 'user-42');
 });
 
-test('unauthenticated PUT /streak is rejected with 401', async () => {
-  const router = createBoardGameRouter({
-    boardGameStreakService: {
-      putStreakForUser: async () => {
-        throw new Error('should not be called without auth');
+test('board-game /streak requires a session and passes req.userId to the service', async () => {
+  let calledWith = null;
+  const app = makeTestApp(
+    '/api/board-game',
+    createBoardGameRouter({
+      boardGameStreakService: {
+        getStreakForUser: async (userId) => {
+          calledWith = userId;
+          return { wins: { '2026-01-01': true }, lastWinDate: '2026-01-01' };
+        },
+        putStreakForUser: async () => {
+          throw new Error('should not be called without auth');
+        },
       },
-    },
-  });
-  const app = makeTestApp('/api/board-game', router);
-  const response = await request(app, '/api/board-game/streak', {
+    }),
+  );
+
+  assert.equal((await request(app, '/api/board-game/streak')).status, 401);
+  const put = await request(app, '/api/board-game/streak', {
     method: 'PUT',
     body: JSON.stringify({ wins: {}, lastWinDate: null }),
     headers: { 'content-type': 'application/json' },
   });
+  assert.equal(put.status, 401);
+  assert.equal(calledWith, null);
 
-  assert.equal(response.status, 401);
-});
-
-test('authenticated GET /streak reaches the service with req.userId', async () => {
-  let calledWith = null;
-  const router = createBoardGameRouter({
-    boardGameStreakService: {
-      getStreakForUser: async (userId) => {
-        calledWith = userId;
-        return { wins: { '2026-01-01': true }, lastWinDate: '2026-01-01' };
-      },
-    },
-  });
-  const app = makeTestApp('/api/board-game', router);
   const response = await request(app, '/api/board-game/streak', {
     headers: { authorization: `Bearer ${validToken('user-7')}` },
   });
-
   assert.equal(response.status, 200);
   assert.equal(calledWith, 'user-7');
   assert.deepEqual(response.body, {

@@ -40,7 +40,7 @@ function makeFakeClient({ applied = [], failOn } = {}) {
 const statements = (client) => client.calls.map((c) => c.sql);
 const quiet = () => {};
 
-test('shouldSkip only skips with --if-configured and no URL', () => {
+test('shouldSkip only skips with --if-configured and no URL; runMigrations needs a URL', async () => {
   assert.equal(shouldSkip(['--if-configured'], {}), true);
   assert.equal(shouldSkip(['--if-configured'], { CACHE_DATABASE_URL: '' }), true);
   assert.equal(
@@ -48,9 +48,6 @@ test('shouldSkip only skips with --if-configured and no URL', () => {
     false,
   );
   assert.equal(shouldSkip([], {}), false);
-});
-
-test('runMigrations without a URL fails loudly', async () => {
   await assert.rejects(() => runMigrations({}), /CACHE_DATABASE_URL is required/);
 });
 
@@ -75,21 +72,26 @@ test('applies only pending migrations in filename order', async () => {
     .filter((c) => c.sql.startsWith('INSERT INTO schema_migrations'))
     .map((c) => c.params[0]);
   assert.deepEqual(inserts, ['002_b.sql', '003_c.sql']);
-});
 
-test('reports no pending migrations', async () => {
-  const dir = makeMigrationsDir({ '001_a.sql': 'SQL_A' });
-  const client = makeFakeClient({ applied: ['001_a.sql'] });
+  // The lock is taken first and released last.
+  const first = client.calls[0];
+  const last = client.calls[client.calls.length - 1];
+  assert.match(first.sql, /pg_advisory_lock/);
+  assert.deepEqual(first.params, [MIGRATION_LOCK_ID]);
+  assert.match(last.sql, /pg_advisory_unlock/);
+  assert.deepEqual(last.params, [MIGRATION_LOCK_ID]);
+
+  // Nothing pending is reported as such.
   const logs = [];
-  const result = await applyPendingMigrations(client, {
-    migrationsDir: dir,
-    log: (m) => logs.push(m),
-  });
-  assert.deepEqual(result, []);
+  const done = await applyPendingMigrations(
+    makeFakeClient({ applied: ['001_a.sql', '002_b.sql', '003_c.sql'] }),
+    { migrationsDir: dir, log: (m) => logs.push(m) },
+  );
+  assert.deepEqual(done, []);
   assert.deepEqual(logs, ['No pending migrations.']);
 });
 
-test('failed migration rolls back, rethrows and stops', async () => {
+test('failed migration rolls back, rethrows, stops, and releases the lock', async () => {
   const dir = makeMigrationsDir({
     '001_a.sql': 'SQL_A',
     '002_b.sql': 'SQL_B',
@@ -103,29 +105,7 @@ test('failed migration rolls back, rethrows and stops', async () => {
   assert.ok(sqls.includes('ROLLBACK'));
   assert.ok(!sqls.includes('COMMIT'));
   assert.ok(!sqls.includes('SQL_B'));
-});
-
-test('advisory lock is taken first and released on success', async () => {
-  const dir = makeMigrationsDir({ '001_a.sql': 'SQL_A' });
-  const client = makeFakeClient();
-  await applyPendingMigrations(client, { migrationsDir: dir, log: quiet });
-
-  const first = client.calls[0];
-  const last = client.calls[client.calls.length - 1];
-  assert.match(first.sql, /pg_advisory_lock/);
-  assert.deepEqual(first.params, [MIGRATION_LOCK_ID]);
-  assert.match(last.sql, /pg_advisory_unlock/);
-  assert.deepEqual(last.params, [MIGRATION_LOCK_ID]);
-});
-
-test('advisory lock is released when a migration fails', async () => {
-  const dir = makeMigrationsDir({ '001_a.sql': 'SQL_A' });
-  const client = makeFakeClient({ failOn: 'SQL_A' });
-  await assert.rejects(() =>
-    applyPendingMigrations(client, { migrationsDir: dir, log: quiet }),
-  );
-  const last = client.calls[client.calls.length - 1];
-  assert.match(last.sql, /pg_advisory_unlock/);
+  assert.match(sqls[sqls.length - 1], /pg_advisory_unlock/);
 });
 
 test('runMigrations connects with the given ssl and always ends the client', async () => {

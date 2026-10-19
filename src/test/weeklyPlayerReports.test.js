@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { beforeEach, test } = require('node:test');
 
-const { makeTestApp, request: rawRequest } = require('./testApp.js');
+const { makeTestApp, jsonRequest: request } = require('./testApp.js');
 const sessionJwt = require('#platform/sessionJwt.js');
 const {
   previousWeekStart,
@@ -23,18 +23,6 @@ const {
   createWeeklyPlayerReportsRouter,
 } = require('#presentation/routes/weeklyPlayerReports.js');
 const { isSendWindow } = require('../../bin/weekly-report-cron.js');
-
-/** JSON bodies need a content-type for express.json() to parse them. */
-function request(app, path, options = {}) {
-  const headers = options.body
-    ? {
-        'content-type': 'application/json',
-        'content-length': String(Buffer.byteLength(options.body)),
-        ...options.headers,
-      }
-    : options.headers;
-  return rawRequest(app, path, { ...options, headers });
-}
 
 const SECRET = 'test-session-secret';
 const CRON = 'cron-secret-value';
@@ -443,7 +431,7 @@ async function seedUsers(ctx) {
 
 // --- Pure builder ----------------------------------------------------------
 
-test('previousWeekStart uses Eastern Monday–Sunday weeks across DST', () => {
+test('Eastern week math: previous week across DST, labels, Monday checks, cron window', () => {
   assert.equal(previousWeekStart(NOW), WEEK);
   // Monday 03:00 UTC is still Sunday evening in New York.
   assert.equal(
@@ -464,9 +452,8 @@ test('previousWeekStart uses Eastern Monday–Sunday weeks across DST', () => {
     previousWeekStart(Date.parse('2026-03-09T13:05:00Z')),
     '2026-03-02',
   );
-});
 
-test('week labels and Monday validation', () => {
+  // Labels and Monday validation.
   assert.equal(formatWeekLabel(WEEK), 'Oct 12–18');
   assert.equal(formatWeekLabel('2026-09-28'), 'Sep 28–Oct 4');
   assert.equal(formatWeekLabel('2026-12-28'), 'Dec 28–Jan 3');
@@ -474,6 +461,13 @@ test('week labels and Monday validation', () => {
   assert.equal(isWeekStart('2026-10-13'), false);
   assert.equal(isWeekStart('2026-02-30'), false);
   assert.equal(isWeekStart('nope'), false);
+
+  // The cron script's send window is Monday at or after 9:00 ET.
+  assert.equal(isSendWindow(Date.parse('2026-10-19T13:05:00Z')), true);
+  assert.equal(isSendWindow(Date.parse('2026-10-19T12:55:00Z')), false);
+  assert.equal(isSendWindow(Date.parse('2026-11-02T13:05:00Z')), false);
+  assert.equal(isSendWindow(Date.parse('2026-11-02T14:05:00Z')), true);
+  assert.equal(isSendWindow(Date.parse('2026-10-20T14:05:00Z')), false);
 });
 
 test('schedule summary counts only completed regular-season/playoff games in the week', () => {
@@ -562,7 +556,7 @@ test('report lines: skater, goalie, did-not-play, headline', () => {
   assert.equal(report.headline, 'Connor McDavid: 2G 4A in 2 GP and 1 more');
 });
 
-test('traded player shows both teams; goalie-only headline; nobody played', () => {
+test('traded player, goalie-only and did-not-play headlines, and the per-user skip', () => {
   const schedule = summarizeWeekSchedule(NORMAL_WEEK, WEEK);
   const traded = buildWeeklyReport({
     weekStart: WEEK,
@@ -596,9 +590,8 @@ test('traded player shows both teams; goalie-only headline; nobody played', () =
     schedule,
   });
   assert.equal(dnp.headline, 'Your favorite players did not play this week.');
-});
 
-test('a user whose favorites and their teams all sat out gets no report', () => {
+  // No report when neither the favorites nor their teams played.
   assert.equal(
     buildWeeklyReport({
       weekStart: WEEK,
@@ -611,17 +604,9 @@ test('a user whose favorites and their teams all sat out gets no report', () => 
   );
 });
 
-test('cron send window is Monday at or after 9:00 ET in EDT and EST', () => {
-  assert.equal(isSendWindow(Date.parse('2026-10-19T13:05:00Z')), true);
-  assert.equal(isSendWindow(Date.parse('2026-10-19T12:55:00Z')), false);
-  assert.equal(isSendWindow(Date.parse('2026-11-02T13:05:00Z')), false);
-  assert.equal(isSendWindow(Date.parse('2026-11-02T14:05:00Z')), true);
-  assert.equal(isSendWindow(Date.parse('2026-10-20T14:05:00Z')), false);
-});
-
 // --- Favorites -------------------------------------------------------------
 
-test('favorite players: add, list, remove, validation, and auth', async () => {
+test('favorite players: add, list, remove, validation, auth, and the cap of 10', async () => {
   const ctx = build();
   assert.equal(
     (await request(ctx.favorites, '/api/favorite-players')).status,
@@ -651,10 +636,8 @@ test('favorite players: add, list, remove, validation, and auth', async () => {
     { method: 'DELETE', headers: auth(7) },
   );
   assert.deepEqual(removed.body, { favorites: [] });
-});
 
-test('favorite players are capped at 10; re-favoriting does not count', async () => {
-  const ctx = build();
+  // Capped at 10; re-favoriting an existing player does not count.
   for (let id = 1; id <= 10; id += 1) {
     assert.equal((await favorite(ctx, 7, 9000000 + id)).status, 200);
   }
@@ -672,7 +655,7 @@ test('favorite players are capped at 10; re-favoriting does not count', async ()
 
 // --- Dispatch --------------------------------------------------------------
 
-test('weekly dispatch requires the cron secret and VAPID config', async () => {
+test('weekly dispatch requires the cron secret and config, and a completed Monday week', async () => {
   const ctx = build();
   const bad = await request(ctx.push, '/api/push/weekly-dispatch', {
     method: 'POST',
@@ -681,9 +664,22 @@ test('weekly dispatch requires the cron secret and VAPID config', async () => {
   assert.equal(bad.status, 401);
   delete process.env.CRON_SECRET;
   assert.equal((await weeklyDispatch(ctx)).status, 503);
+
+  // A weekStart override must be a completed Monday week.
+  process.env.CRON_SECRET = CRON;
+  assert.equal(
+    (await weeklyDispatch(ctx, { weekStart: '2026-10-13' })).status,
+    400,
+  );
+  // The current week (Oct 19–25) is not finished yet.
+  assert.equal(
+    (await weeklyDispatch(ctx, { weekStart: '2026-10-19' })).status,
+    400,
+  );
+  assert.equal((await weeklyDispatch(ctx, { weekStart: WEEK })).status, 200);
 });
 
-test('normal week: reports for active users, one push per subscribed opted-in user', async () => {
+test('normal week: one batched NHL load, reports for active users, one push each, rerun-safe', async () => {
   const ctx = build();
   await seedUsers(ctx);
   const response = await weeklyDispatch(ctx);
@@ -731,12 +727,9 @@ test('normal week: reports for active users, one push per subscribed opted-in us
     decodeURIComponent(ctx.calls.goalies[0]),
     new RegExp(`playerId in \\(${SKINNER}\\)`),
   );
-});
 
-test('a second run (or the DST twin) creates and sends nothing new', async () => {
-  const ctx = build();
-  await seedUsers(ctx);
-  await weeklyDispatch(ctx);
+  // A second run (or the DST twin) creates and sends nothing new, reusing
+  // the week-keyed NHL payloads.
   const again = await weeklyDispatch(ctx);
   assert.deepEqual(again.body, {
     weekStart: WEEK,
@@ -750,7 +743,7 @@ test('a second run (or the DST twin) creates and sends nothing new', async () =>
   assert.equal(ctx.calls.skaters.length, 1);
 });
 
-test('break week: nothing created, nothing sent, no stats calls', async () => {
+test('break weeks and NHL failures create and send nothing', async () => {
   const ctx = build({ schedule: BREAK_WEEK });
   await seedUsers(ctx);
   const response = await weeklyDispatch(ctx);
@@ -765,19 +758,18 @@ test('break week: nothing created, nothing sent, no stats calls', async () => {
   assert.equal(ctx.db.reports.size, 0);
   assert.equal(ctx.sent.length, 0);
   assert.equal(ctx.calls.skaters.length + ctx.calls.goalies.length, 0);
-});
 
-test('NHL stats failure: 502, no reports, no ledger; a retry succeeds', async () => {
-  const ctx = build();
-  await seedUsers(ctx);
-  ctx.fail.stats = true;
-  const failed = await weeklyDispatch(ctx);
+  // An NHL stats failure is a 502 with nothing written; a retry succeeds.
+  const failing = build();
+  await seedUsers(failing);
+  failing.fail.stats = true;
+  const failed = await weeklyDispatch(failing);
   assert.equal(failed.status, 502);
-  assert.equal(ctx.db.reports.size, 0);
-  assert.equal(ctx.db.ledger.size, 0);
-  assert.equal(ctx.sent.length, 0);
-  ctx.fail.stats = false;
-  const retried = await weeklyDispatch(ctx);
+  assert.equal(failing.db.reports.size, 0);
+  assert.equal(failing.db.ledger.size, 0);
+  assert.equal(failing.sent.length, 0);
+  failing.fail.stats = false;
+  const retried = await weeklyDispatch(failing);
   assert.equal(retried.status, 200);
   assert.equal(retried.body.sent, 1);
 });
@@ -812,20 +804,6 @@ test('gone subscriptions are removed; read reports are not pushed', async () => 
   });
   const second = await weeklyDispatch(ctx2);
   assert.equal(second.body.sent, 0);
-});
-
-test('weekStart override must be a completed Monday week', async () => {
-  const ctx = build();
-  assert.equal(
-    (await weeklyDispatch(ctx, { weekStart: '2026-10-13' })).status,
-    400,
-  );
-  // The current week (Oct 19–25) is not finished yet.
-  assert.equal(
-    (await weeklyDispatch(ctx, { weekStart: '2026-10-19' })).status,
-    400,
-  );
-  assert.equal((await weeklyDispatch(ctx, { weekStart: WEEK })).status, 200);
 });
 
 // --- Inbox, read tokens, toggle -------------------------------------------

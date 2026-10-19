@@ -20,7 +20,7 @@ const sh = (playerId, period, startTime, endTime, extra = {}) => ({
 const fw = (id, positionCode) => ({ id, positionCode });
 const df = (id, shootsCatches) => ({ id, positionCode: 'D', shootsCatches });
 
-test('overlap math spans periods and ignores goal events', () => {
+test('overlap math spans periods and ignores goal events; no usable shifts is null', () => {
   const roster = {
     forwards: [fw(1, 'L'), fw(2, 'C'), fw(3, 'R')],
     defensemen: [],
@@ -47,6 +47,19 @@ test('overlap math spans periods and ignores goal events', () => {
       [2, 'C'],
       [3, 'RW'],
     ],
+  );
+
+  // Empty or goal-only input yields null.
+  assert.equal(buildLines({ shifts: [], rawRoster: {}, triCode: 'COL' }), null);
+  assert.equal(
+    buildLines({
+      shifts: [
+        sh(1, 1, '00:00', '00:00', { typeCode: 505, eventDescription: 'goal' }),
+      ],
+      rawRoster: {},
+      triCode: 'COL',
+    }),
+    null,
   );
 });
 
@@ -116,17 +129,88 @@ test('defense pairs by shot hand, goalie starter by TOI, non-roster skipped', ()
   assert.equal(out.defensePairs[0].togetherSeconds, 40);
 });
 
-test('empty or goal-only input yields null', () => {
-  assert.equal(buildLines({ shifts: [], rawRoster: {}, triCode: 'COL' }), null);
-  assert.equal(
+// ---- faceoff-based centers ----
+const draw = (winningPlayerId, losingPlayerId) => ({
+  typeDescKey: 'faceoff',
+  details: { winningPlayerId, losingPlayerId },
+});
+const draws = (playerId, n, opponentId = 900) =>
+  Array.from({ length: n }, (_, i) =>
+    i % 2 ? draw(opponentId, playerId) : draw(playerId, opponentId),
+  );
+
+test('faceoff leader is the center even when nobody is a natural C', () => {
+  // Cates (1) is listed L, Michkov (2) R with the most TOI, Foerster (3) R.
+  const roster = {
+    forwards: [
+      { ...fw(1, 'L'), shootsCatches: 'L' },
+      { ...fw(2, 'R'), shootsCatches: 'R' },
+      { ...fw(3, 'R'), shootsCatches: 'L' },
+    ],
+    defensemen: [],
+    goalies: [],
+  };
+  const shifts = [
+    sh(1, 1, '00:00', '00:40'),
+    sh(2, 1, '00:00', '00:50'),
+    sh(3, 1, '00:00', '00:30'),
+  ];
+  const slots = (faceoffs) =>
     buildLines({
-      shifts: [
-        sh(1, 1, '00:00', '00:00', { typeCode: 505, eventDescription: 'goal' }),
-      ],
-      rawRoster: {},
+      shifts,
+      rawRoster: roster,
       triCode: 'COL',
-    }),
-    null,
+      faceoffs,
+    }).forwardLines[0].players.map((p) => [p.id, p.slot]);
+
+  assert.deepEqual(slots(draws(1, 12)), [
+    [3, 'LW'],
+    [1, 'C'],
+    [2, 'RW'],
+  ]);
+  // Same through a pre-counted Map.
+  assert.deepEqual(slots(new Map([[1, 12]])), slots(draws(1, 12)));
+});
+
+test('without clear faceoff data the highest-TOI player centers; faceoffCounts tallies draws', () => {
+  const roster = {
+    forwards: [fw(1, 'L'), fw(2, 'R'), fw(3, 'R')],
+    defensemen: [],
+    goalies: [],
+  };
+  const shifts = [
+    sh(1, 1, '00:00', '00:40'),
+    sh(2, 1, '00:00', '00:50'),
+    sh(3, 1, '00:00', '00:30'),
+  ];
+  const centerOf = (faceoffs) =>
+    buildLines({
+      shifts,
+      rawRoster: roster,
+      triCode: 'COL',
+      faceoffs,
+    }).forwardLines[0].players.find((p) => p.slot === 'C').id;
+  assert.equal(centerOf(undefined), 2);
+  assert.equal(centerOf([]), 2);
+  // Too few draws is not a clear leader, but the no-natural-C tie-break
+  // still prefers the player with the most faceoffs over TOI.
+  assert.equal(centerOf(draws(1, 2)), 1);
+  // A tied lead is not clear either: most faceoffs, then TOI, picks the center.
+  assert.equal(centerOf([...draws(1, 6), ...draws(3, 6)]), 1);
+
+  const counts = faceoffCounts([
+    draw(1, 2),
+    draw(2, 1),
+    draw(1, 3),
+    { typeDescKey: 'shot-on-goal', details: { winningPlayerId: 9 } },
+  ]);
+  assert.deepEqual(
+    [...counts],
+    [
+      [1, 3],
+      [2, 2],
+      [3, 1],
+    ],
   );
 });
 
@@ -215,8 +299,20 @@ const game = (over = {}) => ({
   ...over,
 });
 
-test('OFF game uses the permanent shifts key and returns contract', async () => {
-  const { service, calls } = setup({ games: { recent: [game()] } });
+const pbpPayload = {
+  plays: [
+    { typeDescKey: 'shot-on-goal', details: { shootingPlayerId: 1 } },
+    ...draws(2, 6, 900),
+    { typeDescKey: 'goal', details: {} },
+  ],
+  rosterSpots: [{ playerId: 1 }],
+};
+
+test('OFF games use permanent shift/faceoff keys, FINAL games 5-minute prelim keys', async () => {
+  const { service, calls, store } = setup({
+    games: { recent: [game()] },
+    pbp: pbpPayload,
+  });
   const out = await service.getLines('COL', '20262027');
   const shiftCall = calls.cache.find(
     (c) => c.type === 'shifts' && c.key === '2026020010',
@@ -236,19 +332,28 @@ test('OFF game uses the permanent shifts key and returns contract', async () => 
     calls.cache.find((c) => c.type === 'roster').key,
     'COL_20262027',
   );
-});
 
-test('FINAL game uses prelim key with short TTL', async () => {
-  const { service, calls } = setup({
+  // Faceoff plays: permanent for OFF, and only faceoff plays are stored.
+  assert.ok(calls.gets.includes('/gamecenter/2026020010/play-by-play'));
+  const offFaceoffs = calls.cache.find((c) => c.key === '2026020010_faceoffs');
+  assert.equal(offFaceoffs.opts, undefined);
+  const stored = store.get('shifts:2026020010_faceoffs');
+  assert.deepEqual(Object.keys(stored), ['plays']);
+  assert.equal(stored.plays.length, 6);
+  assert.ok(stored.plays.every((p) => p.typeDescKey === 'faceoff'));
+
+  const fin = setup({
     games: { recent: [game({ gameState: 'FINAL' })] },
+    pbp: pbpPayload,
   });
-  await service.getLines('COL', '20262027');
-  const shiftCall = calls.cache.find((c) => c.type === 'shifts');
-  assert.equal(shiftCall.key, '2026020010_prelim');
-  assert.equal(shiftCall.opts.ttlMs, 5 * 60 * 1000);
+  await fin.service.getLines('COL', '20262027');
+  for (const key of ['2026020010_prelim', '2026020010_faceoffs_prelim']) {
+    const call = fin.calls.cache.find((c) => c.key === key);
+    assert.equal(call.opts.ttlMs, 5 * 60 * 1000, key);
+  }
 });
 
-test('empty chart for OFF game is not permanently cached, is remembered briefly, and degrades to none', async () => {
+test('empty shift charts and play-by-play are not cached permanently but remembered briefly', async () => {
   const { service, calls, store } = setup({
     games: { recent: [game()] },
     shiftsResult: { data: [] },
@@ -270,9 +375,29 @@ test('empty chart for OFF game is not permanently cached, is remembered briefly,
     1,
     'second request is served by the negative cache',
   );
+
+  // An empty play-by-play keeps the shift lines.
+  const pbp = setup({
+    games: { recent: [game()] },
+    pbp: { plays: [] },
+  });
+  const pbpOut = await pbp.service.getLines('COL', '20262027');
+  assert.equal(pbpOut.source, 'shifts');
+  assert.ok(!pbp.store.has('shifts:2026020010_faceoffs'));
+  assert.ok(pbp.store.has('shifts:2026020010_faceoffs_prelim'));
+
+  const pbpFetches = () =>
+    pbp.calls.gets.filter((u) => u.includes('play-by-play')).length;
+  assert.equal(pbpFetches(), 1);
+  await pbp.service.getLines('COL', '20262027');
+  assert.equal(
+    pbpFetches(),
+    1,
+    'second request is served by the negative cache',
+  );
 });
 
-test('no completed game -> none without fetching shifts; falls back to season schedule', async () => {
+test('game selection: latest completed game, season fallback, past seasons skip the recent week', async () => {
   const future = game({ gameState: 'FUT', gameTime: '2026-10-25T23:00:00Z' });
   const { service, calls } = setup({
     games: { recent: [future], season: [future] },
@@ -294,16 +419,14 @@ test('no completed game -> none without fetching shifts; falls back to season sc
   });
   const res = await past.service.getLines('COL', '20262027');
   assert.equal(res.game.gameId, 5);
+
+  const pastSeason = setup({ games: { season: [game()] } });
+  await pastSeason.service.getLines('COL', '20242025');
+  assert.equal(pastSeason.calls.recent, 0);
+  assert.equal(pastSeason.calls.schedule, 1);
 });
 
-test('past season skips the recent-week lookup', async () => {
-  const { service, calls } = setup({ games: { season: [game()] } });
-  await service.getLines('COL', '20242025');
-  assert.equal(calls.recent, 0);
-  assert.equal(calls.schedule, 1);
-});
-
-test('shift fetch error degrades to none', async () => {
+test('a shift fetch error degrades to none; a play-by-play error keeps shift lines', async () => {
   const orig = console.error;
   console.error = () => {};
   try {
@@ -314,176 +437,14 @@ test('shift fetch error degrades to none', async () => {
     const out = await service.getLines('COL', '20262027');
     assert.equal(out.source, 'none');
     assert.deepEqual(out.goalies, { starterId: null });
-  } finally {
-    console.error = orig;
-  }
-});
 
-// ---- faceoff-based centers ----
-const draw = (winningPlayerId, losingPlayerId) => ({
-  typeDescKey: 'faceoff',
-  details: { winningPlayerId, losingPlayerId },
-});
-const draws = (playerId, n, opponentId = 900) =>
-  Array.from({ length: n }, (_, i) =>
-    i % 2 ? draw(opponentId, playerId) : draw(playerId, opponentId),
-  );
-
-test('faceoff leader is the center even when nobody is a natural C', () => {
-  // Cates (1) is listed L, Michkov (2) R with the most TOI, Foerster (3) R.
-  const roster = {
-    forwards: [
-      { ...fw(1, 'L'), shootsCatches: 'L' },
-      { ...fw(2, 'R'), shootsCatches: 'R' },
-      { ...fw(3, 'R'), shootsCatches: 'L' },
-    ],
-    defensemen: [],
-    goalies: [],
-  };
-  const shifts = [
-    sh(1, 1, '00:00', '00:40'),
-    sh(2, 1, '00:00', '00:50'),
-    sh(3, 1, '00:00', '00:30'),
-  ];
-  const slots = (faceoffs) =>
-    buildLines({
-      shifts,
-      rawRoster: roster,
-      triCode: 'COL',
-      faceoffs,
-    }).forwardLines[0].players.map((p) => [p.id, p.slot]);
-
-  assert.deepEqual(slots(draws(1, 12)), [
-    [3, 'LW'],
-    [1, 'C'],
-    [2, 'RW'],
-  ]);
-  // Same through a pre-counted Map.
-  assert.deepEqual(slots(new Map([[1, 12]])), slots(draws(1, 12)));
-});
-
-test('without faceoff data the highest-TOI player stays at center; weak data only breaks ties', () => {
-  const roster = {
-    forwards: [fw(1, 'L'), fw(2, 'R'), fw(3, 'R')],
-    defensemen: [],
-    goalies: [],
-  };
-  const shifts = [
-    sh(1, 1, '00:00', '00:40'),
-    sh(2, 1, '00:00', '00:50'),
-    sh(3, 1, '00:00', '00:30'),
-  ];
-  const centerOf = (faceoffs) =>
-    buildLines({
-      shifts,
-      rawRoster: roster,
-      triCode: 'COL',
-      faceoffs,
-    }).forwardLines[0].players.find((p) => p.slot === 'C').id;
-  assert.equal(centerOf(undefined), 2);
-  assert.equal(centerOf([]), 2);
-  // Too few draws is not a clear leader, but the no-natural-C tie-break
-  // still prefers the player with the most faceoffs over TOI.
-  assert.equal(centerOf(draws(1, 2)), 1);
-  // A tied lead is not clear either: most faceoffs, then TOI, picks the center.
-  assert.equal(centerOf([...draws(1, 6), ...draws(3, 6)]), 1);
-});
-
-test('faceoffCounts adds wins and losses and ignores other plays', () => {
-  const counts = faceoffCounts([
-    draw(1, 2),
-    draw(2, 1),
-    draw(1, 3),
-    { typeDescKey: 'shot-on-goal', details: { winningPlayerId: 9 } },
-  ]);
-  assert.deepEqual(
-    [...counts],
-    [
-      [1, 3],
-      [2, 2],
-      [3, 1],
-    ],
-  );
-});
-
-const pbpPayload = {
-  plays: [
-    { typeDescKey: 'shot-on-goal', details: { shootingPlayerId: 1 } },
-    ...draws(2, 6, 900),
-    { typeDescKey: 'goal', details: {} },
-  ],
-  rosterSpots: [{ playerId: 1 }],
-};
-
-test('OFF game caches faceoff plays permanently; FINAL uses prelim key and 5-minute TTL', async () => {
-  const off = setup({ games: { recent: [game()] }, pbp: pbpPayload });
-  const out = await off.service.getLines('COL', '20262027');
-  assert.equal(out.source, 'shifts');
-  const offCall = off.calls.cache.find(
-    (c) => c.type === 'shifts' && c.key.endsWith('_faceoffs'),
-  );
-  assert.equal(offCall.key, '2026020010_faceoffs');
-  assert.equal(offCall.opts, undefined);
-  assert.ok(off.calls.gets.includes('/gamecenter/2026020010/play-by-play'));
-
-  const fin = setup({
-    games: { recent: [game({ gameState: 'FINAL' })] },
-    pbp: pbpPayload,
-  });
-  await fin.service.getLines('COL', '20262027');
-  const finCall = fin.calls.cache.find((c) =>
-    c.key.endsWith('_faceoffs_prelim'),
-  );
-  assert.equal(finCall.key, '2026020010_faceoffs_prelim');
-  assert.equal(finCall.opts.ttlMs, 5 * 60 * 1000);
-});
-
-test('stored play-by-play payload contains only faceoff plays', async () => {
-  const { service, store } = setup({
-    games: { recent: [game()] },
-    pbp: pbpPayload,
-  });
-  await service.getLines('COL', '20262027');
-  const stored = store.get('shifts:2026020010_faceoffs');
-  assert.deepEqual(Object.keys(stored), ['plays']);
-  assert.equal(stored.plays.length, 6);
-  assert.ok(stored.plays.every((p) => p.typeDescKey === 'faceoff'));
-});
-
-test('empty play-by-play for OFF game is not permanently cached and is remembered briefly', async () => {
-  const { service, calls, store } = setup({
-    games: { recent: [game()] },
-    pbp: { plays: [] },
-  });
-  const out = await service.getLines('COL', '20262027');
-  assert.equal(out.source, 'shifts');
-  assert.ok(!store.has('shifts:2026020010_faceoffs'));
-  assert.ok(store.has('shifts:2026020010_faceoffs_prelim'));
-
-  const pbpFetches = () =>
-    calls.gets.filter((u) => u.includes('play-by-play')).length;
-  assert.equal(pbpFetches(), 1);
-  await service.getLines('COL', '20262027');
-  assert.equal(
-    pbpFetches(),
-    1,
-    'second request is served by the negative cache',
-  );
-});
-
-test('play-by-play fetch error still returns shifts lines', async () => {
-  const orig = console.error;
-  const logged = [];
-  console.error = (...a) => logged.push(a);
-  try {
-    const { service } = setup({
+    const pbpDown = setup({
       games: { recent: [game()] },
       pbpError: new Error('pbp down'),
     });
-    const out = await service.getLines('COL', '20262027');
-    assert.equal(out.source, 'shifts');
-    assert.equal(out.forwardLines.length, 1);
-    assert.equal(logged.length, 1);
+    const lines = await pbpDown.service.getLines('COL', '20262027');
+    assert.equal(lines.source, 'shifts');
+    assert.equal(lines.forwardLines.length, 1);
   } finally {
     console.error = orig;
   }
