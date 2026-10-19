@@ -76,6 +76,27 @@ function shortDayOfWeek(gameDate) {
   });
 }
 
+const RECENT_TEAM_GAMES_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * Maps a raw club-schedule payload (season or week) to ScheduleGameContracts
+ * sorted by calendar date. Club schedules carry the date on each game.
+ */
+function mapClubGames(raw) {
+  return (raw?.games ?? [])
+    .map((g) =>
+      mapGame(g, {
+        date: g.gameDate,
+        dayAbbrev: shortDayOfWeek(g.gameDate),
+      }),
+    )
+    .sort(
+      (a, b) =>
+        new Date(`${a.date}T12:00:00`).getTime() -
+        new Date(`${b.date}T12:00:00`).getTime(),
+    );
+}
+
 /**
  * Schedule slice service. Owns every read of NHL schedule data plus the
  * write-behind persistence of what it fetches; route handlers only pass through
@@ -207,19 +228,25 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           sourceLabel: 'clubSchedule',
         }),
       );
-      const games = (raw.games ?? [])
-        .map((g) =>
-          mapGame(g, {
-            date: g.gameDate,
-            dayAbbrev: shortDayOfWeek(g.gameDate),
-          }),
-        )
-        .sort(
-          (a, b) =>
-            new Date(`${a.date}T12:00:00`).getTime() -
-            new Date(`${b.date}T12:00:00`).getTime(),
-        );
-      return { games };
+      return { games: mapClubGames(raw) };
+    },
+
+    /**
+     * One club's games for the current NHL week, on a short TTL. The season
+     * club schedule above is cached for 12 hours, which is too stale to notice
+     * a game that just went final; After Action Reports overlay this on top.
+     */
+    async getRecentTeamGames(triCode) {
+      const raw = await GetOrFetch(
+        CACHE_TYPES.SCHEDULE,
+        `team_${triCode}_week_now`,
+        () =>
+          axiosNhl
+            .get(`/club-schedule/${triCode}/week/now`)
+            .then((r) => r.data),
+        { ttlMs: RECENT_TEAM_GAMES_TTL_MS },
+      );
+      return { games: mapClubGames(raw) };
     },
 
     persistSchedule,
