@@ -35,8 +35,9 @@ function latestCompleted(games, nowMs) {
  * completed game's shift chart.
  *
  * Call budget per cold request: 0-1 schedule (shared caches), 1 roster (shared
- * ROSTER cache key with rosterService), 1 shift chart (shared by both teams of
- * the game; permanent once the game is OFF). Only raw payloads are cached.
+ * ROSTER cache key with rosterService), 1 shift chart and 1 play-by-play
+ * (faceoff plays only), both shared by both teams of the game and permanent once
+ * the game is OFF. Only raw payloads are cached.
  *
  * @param {{ nhlApi: any, cache: any, seasons: any, scheduleService: any, now?: () => number }} deps
  */
@@ -98,6 +99,44 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
     );
   }
 
+  async function fetchFaceoffs(gameId) {
+    const res = await nhlApi.axiosNhl.get(`/gamecenter/${gameId}/play-by-play`);
+    // Store only the faceoff plays to keep the cached payload small.
+    const plays = (res.data?.plays ?? []).filter(
+      (p) => p?.typeDescKey === 'faceoff',
+    );
+    return { plays };
+  }
+
+  async function getFaceoffPayload(game) {
+    const gameId = game.gameId;
+    if (game.gameState === 'OFF') {
+      return await GetOrFetch(CACHE_TYPES.SHIFTS, `${gameId}_faceoffs`, () =>
+        fetchFaceoffs(gameId),
+      );
+    }
+    return await GetOrFetch(
+      CACHE_TYPES.SHIFTS,
+      `${gameId}_faceoffs_prelim`,
+      () => fetchFaceoffs(gameId),
+      { ttlMs: PRELIM_SHIFTS_TTL_MS },
+    );
+  }
+
+  // Faceoffs only refine the center pick, so a failure never fails the request.
+  async function getFaceoffs(game) {
+    try {
+      const payload = await getFaceoffPayload(game);
+      return payload?.plays ?? [];
+    } catch (error) {
+      console.error(
+        `Play-by-play fetch failed for game ${game.gameId}:`,
+        error,
+      );
+      return [];
+    }
+  }
+
   return {
     async getLines(triCode, seasonId) {
       const game = await findGame(triCode, seasonId);
@@ -105,8 +144,12 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
 
       let payload;
       let rawRoster;
+      let faceoffs;
       try {
-        payload = await getShiftPayload(game);
+        [payload, faceoffs] = await Promise.all([
+          getShiftPayload(game),
+          getFaceoffs(game),
+        ]);
         rawRoster = await GetOrFetch(
           CACHE_TYPES.ROSTER,
           `${triCode}_${seasonId}`,
@@ -127,6 +170,7 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
         shifts: payload?.data ?? [],
         rawRoster,
         triCode,
+        faceoffs,
       });
       if (!built) return emptyLines();
 

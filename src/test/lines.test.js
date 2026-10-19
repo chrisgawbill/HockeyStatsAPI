@@ -1,7 +1,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { buildLines } = require('#slices/lines/mappers/lineBuilder.js');
+const {
+  buildLines,
+  faceoffCounts,
+} = require('#slices/lines/mappers/lineBuilder.js');
 const { createLineService } = require('#slices/lines/lineService.js');
 
 const sh = (playerId, period, startTime, endTime, extra = {}) => ({
@@ -138,7 +141,14 @@ const chart = {
   data: [1, 2, 3, 30].map((id) => sh(id, 1, '00:00', '00:30')),
 };
 
-function setup({ games, shiftsResult, shiftsError, season = '20262027' }) {
+function setup({
+  games,
+  shiftsResult,
+  shiftsError,
+  pbp,
+  pbpError,
+  season = '20262027',
+}) {
   const calls = { gets: [], cache: [], recent: 0, schedule: 0 };
   const store = new Map();
   const cache = {
@@ -159,7 +169,16 @@ function setup({ games, shiftsResult, shiftsError, season = '20262027' }) {
     },
   };
   const nhlApi = {
-    axiosNhl: { get: async (u) => (calls.gets.push(u), { data: rosterRaw }) },
+    axiosNhl: {
+      get: async (u) => {
+        calls.gets.push(u);
+        if (u.includes('play-by-play')) {
+          if (pbpError) throw pbpError;
+          return { data: pbp ?? { plays: [] } };
+        }
+        return { data: rosterRaw };
+      },
+    },
     axiosNhlShifts: {
       get: async (u) => {
         calls.gets.push(u);
@@ -199,8 +218,10 @@ const game = (over = {}) => ({
 test('OFF game uses the permanent shifts key and returns contract', async () => {
   const { service, calls } = setup({ games: { recent: [game()] } });
   const out = await service.getLines('COL', '20262027');
-  const shiftCall = calls.cache.find((c) => c.type === 'shifts');
-  assert.equal(shiftCall.key, '2026020010');
+  const shiftCall = calls.cache.find(
+    (c) => c.type === 'shifts' && c.key === '2026020010',
+  );
+  assert.ok(shiftCall);
   assert.equal(shiftCall.opts, undefined);
   assert.equal(out.source, 'shifts');
   assert.deepEqual(out.game, {
@@ -235,7 +256,9 @@ test('empty chart for OFF game is not permanently cached, is remembered briefly,
   const out = await service.getLines('COL', '20262027');
   assert.equal(out.source, 'none');
   assert.equal(out.game, null);
-  const shiftKeys = [...store.keys()].filter((k) => k.startsWith('shifts:'));
+  const shiftKeys = [...store.keys()].filter(
+    (k) => k.startsWith('shifts:') && !k.includes('_faceoffs'),
+  );
   assert.deepEqual(shiftKeys, ['shifts:2026020010_prelim']);
 
   const shiftFetches = () =>
@@ -291,6 +314,155 @@ test('shift fetch error degrades to none', async () => {
     const out = await service.getLines('COL', '20262027');
     assert.equal(out.source, 'none');
     assert.deepEqual(out.goalies, { starterId: null });
+  } finally {
+    console.error = orig;
+  }
+});
+
+// ---- faceoff-based centers ----
+const draw = (winningPlayerId, losingPlayerId) => ({
+  typeDescKey: 'faceoff',
+  details: { winningPlayerId, losingPlayerId },
+});
+const draws = (playerId, n, opponentId = 900) =>
+  Array.from({ length: n }, (_, i) =>
+    i % 2 ? draw(opponentId, playerId) : draw(playerId, opponentId),
+  );
+
+test('faceoff leader is the center even when nobody is a natural C', () => {
+  // Cates (1) is listed L, Michkov (2) R with the most TOI, Foerster (3) R.
+  const roster = {
+    forwards: [
+      { ...fw(1, 'L'), shootsCatches: 'L' },
+      { ...fw(2, 'R'), shootsCatches: 'R' },
+      { ...fw(3, 'R'), shootsCatches: 'L' },
+    ],
+    defensemen: [],
+    goalies: [],
+  };
+  const shifts = [
+    sh(1, 1, '00:00', '00:40'),
+    sh(2, 1, '00:00', '00:50'),
+    sh(3, 1, '00:00', '00:30'),
+  ];
+  const slots = (faceoffs) =>
+    buildLines({
+      shifts,
+      rawRoster: roster,
+      triCode: 'COL',
+      faceoffs,
+    }).forwardLines[0].players.map((p) => [p.id, p.slot]);
+
+  assert.deepEqual(slots(draws(1, 12)), [
+    [3, 'LW'],
+    [1, 'C'],
+    [2, 'RW'],
+  ]);
+  // Same through a pre-counted Map.
+  assert.deepEqual(slots(new Map([[1, 12]])), slots(draws(1, 12)));
+});
+
+test('without faceoff data the highest-TOI player stays at center; weak data only breaks ties', () => {
+  const roster = {
+    forwards: [fw(1, 'L'), fw(2, 'R'), fw(3, 'R')],
+    defensemen: [],
+    goalies: [],
+  };
+  const shifts = [
+    sh(1, 1, '00:00', '00:40'),
+    sh(2, 1, '00:00', '00:50'),
+    sh(3, 1, '00:00', '00:30'),
+  ];
+  const centerOf = (faceoffs) =>
+    buildLines({
+      shifts,
+      rawRoster: roster,
+      triCode: 'COL',
+      faceoffs,
+    }).forwardLines[0].players.find((p) => p.slot === 'C').id;
+  assert.equal(centerOf(undefined), 2);
+  assert.equal(centerOf([]), 2);
+  // Too few draws is not a clear leader, but the no-natural-C tie-break
+  // still prefers the player with the most faceoffs over TOI.
+  assert.equal(centerOf(draws(1, 2)), 1);
+  // A tied lead is not clear either: most faceoffs, then TOI, picks the center.
+  assert.equal(centerOf([...draws(1, 6), ...draws(3, 6)]), 1);
+});
+
+test('faceoffCounts adds wins and losses and ignores other plays', () => {
+  const counts = faceoffCounts([
+    draw(1, 2),
+    draw(2, 1),
+    draw(1, 3),
+    { typeDescKey: 'shot-on-goal', details: { winningPlayerId: 9 } },
+  ]);
+  assert.deepEqual(
+    [...counts],
+    [
+      [1, 3],
+      [2, 2],
+      [3, 1],
+    ],
+  );
+});
+
+const pbpPayload = {
+  plays: [
+    { typeDescKey: 'shot-on-goal', details: { shootingPlayerId: 1 } },
+    ...draws(2, 6, 900),
+    { typeDescKey: 'goal', details: {} },
+  ],
+  rosterSpots: [{ playerId: 1 }],
+};
+
+test('OFF game caches faceoff plays permanently; FINAL uses prelim key and 5-minute TTL', async () => {
+  const off = setup({ games: { recent: [game()] }, pbp: pbpPayload });
+  const out = await off.service.getLines('COL', '20262027');
+  assert.equal(out.source, 'shifts');
+  const offCall = off.calls.cache.find(
+    (c) => c.type === 'shifts' && c.key.endsWith('_faceoffs'),
+  );
+  assert.equal(offCall.key, '2026020010_faceoffs');
+  assert.equal(offCall.opts, undefined);
+  assert.ok(off.calls.gets.includes('/gamecenter/2026020010/play-by-play'));
+
+  const fin = setup({
+    games: { recent: [game({ gameState: 'FINAL' })] },
+    pbp: pbpPayload,
+  });
+  await fin.service.getLines('COL', '20262027');
+  const finCall = fin.calls.cache.find((c) =>
+    c.key.endsWith('_faceoffs_prelim'),
+  );
+  assert.equal(finCall.key, '2026020010_faceoffs_prelim');
+  assert.equal(finCall.opts.ttlMs, 5 * 60 * 1000);
+});
+
+test('stored play-by-play payload contains only faceoff plays', async () => {
+  const { service, store } = setup({
+    games: { recent: [game()] },
+    pbp: pbpPayload,
+  });
+  await service.getLines('COL', '20262027');
+  const stored = store.get('shifts:2026020010_faceoffs');
+  assert.deepEqual(Object.keys(stored), ['plays']);
+  assert.equal(stored.plays.length, 6);
+  assert.ok(stored.plays.every((p) => p.typeDescKey === 'faceoff'));
+});
+
+test('play-by-play fetch error still returns shifts lines', async () => {
+  const orig = console.error;
+  const logged = [];
+  console.error = (...a) => logged.push(a);
+  try {
+    const { service } = setup({
+      games: { recent: [game()] },
+      pbpError: new Error('pbp down'),
+    });
+    const out = await service.getLines('COL', '20262027');
+    assert.equal(out.source, 'shifts');
+    assert.equal(out.forwardLines.length, 1);
+    assert.equal(logged.length, 1);
   } finally {
     console.error = orig;
   }
