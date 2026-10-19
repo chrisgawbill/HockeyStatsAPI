@@ -16,4 +16,17 @@ const aiRateLimiter = rateLimit({
   },
 });
 
-module.exports = { aiRateLimiter };
+/** Limiter for the cron dispatch endpoint: 20 requests per 15 minutes per IP. */
+const dispatchRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    res
+      .status(429)
+      .json({ error: 'Too many requests, please try again later.' });
+  },
+});
+
+module.exports = { aiRateLimiter, dispatchRateLimiter };

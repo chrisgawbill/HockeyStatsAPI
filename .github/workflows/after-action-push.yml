@@ -1,0 +1,31 @@
+name: After Action push
+
+on:
+  schedule:
+    # Every 10 minutes from 16:00 to 08:59 UTC (NHL game hours).
+    - cron: '7,17,27,37,47,57 16-23,0-8 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: after-action-push
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check scoreboard and dispatch pushes
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          AAR_PUSH_API_URL: ${{ secrets.AAR_PUSH_API_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$AAR_PUSH_API_URL" ]; then
+            echo "::error::Set the CRON_SECRET and AAR_PUSH_API_URL repository secrets."
+            exit 1
+          fi
+          node bin/aar-push-cron.js

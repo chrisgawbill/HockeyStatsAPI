@@ -22,6 +22,7 @@ const {
   createFavoritesRouter,
   createAfterActionReportsRouter,
 } = require('#presentation/routes/afterActionReports.js');
+const { createPushRouter } = require('#presentation/routes/push.js');
 
 const corsOptions = {
   origin: [
@@ -67,6 +68,7 @@ function createApp(container) {
     '/api/after-action-reports',
     createAfterActionReportsRouter(container),
   );
+  app.use('/api/push', createPushRouter(container));
 
   app.use(notFoundHandler);
   app.use(errorHandler);
