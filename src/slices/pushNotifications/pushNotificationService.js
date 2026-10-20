@@ -58,14 +58,36 @@ function parseSubscription(body) {
   return { endpoint, p256dh: keys.p256dh, auth: keys.auth };
 }
 
-function buildNotification(report) {
+function buildNotification(report, favorites = [], boxscore) {
   const suffix =
     report.periodType === 'OT' || report.periodType === 'SO'
       ? ` (${report.periodType})`
       : '';
+  const skaters = ['homeTeam', 'awayTeam'].flatMap((side) => {
+    const stats = boxscore?.playerByGameStats?.[side];
+    return [...(stats?.forwards ?? []), ...(stats?.defense ?? [])];
+  });
+  const highlights = favorites.flatMap((favorite) => {
+    const player = skaters.find(
+      (skater) => Number(skater.playerId) === favorite.playerId,
+    );
+    if (!player) return [];
+    const goals = Number(player.goals) || 0;
+    const assists = Number(player.assists) || 0;
+    const points = goals + assists;
+    if (points === 0) return [];
+    const stats = [];
+    if (goals) stats.push(`${goals} goal${goals === 1 ? '' : 's'}`);
+    if (assists) stats.push(`${assists} assist${assists === 1 ? '' : 's'}`);
+    const milestone = goals >= 3
+      ? ' — hat trick!'
+      : points >= 2 ? ` — ${points}-point game!` : '';
+    return [`${favorite.name}: ${stats.join(', ')}${milestone}`];
+  });
+  const score = `${report.awayTeam} ${report.awayScore} @ ${report.homeTeam} ${report.homeScore}${suffix}`;
   return {
     title: 'After Action Report',
-    body: `${report.awayTeam} ${report.awayScore} @ ${report.homeTeam} ${report.homeScore}${suffix}`,
+    body: [...highlights, score].join(' · '),
   };
 }
 
@@ -79,6 +101,7 @@ function buildNotification(report) {
  *   sessionJwt: typeof import('#platform/sessionJwt.js'),
  *   afterActionReportService: ReturnType<typeof import('#slices/afterActionReports/afterActionReportService.js').createAfterActionReportService>,
  *   weeklyPlayerReportService: ReturnType<typeof import('#slices/weeklyPlayerReports/weeklyPlayerReportService.js').createWeeklyPlayerReportService>,
+ *   scheduleService: ReturnType<typeof import('#slices/schedule/scheduleService.js').createScheduleService>,
  *   webPush?: { sendNotification: Function },
  *   now?: () => number,
  * }} deps
@@ -88,6 +111,7 @@ function createPushNotificationService({
   sessionJwt,
   afterActionReportService,
   weeklyPlayerReportService,
+  scheduleService,
   webPush = require('web-push'),
   now = () => Date.now(),
 }) {
@@ -316,6 +340,7 @@ function createPushNotificationService({
         { fresh: true },
       );
       const cutoff = now() - MAX_GAME_AGE_MS;
+      const boxscores = new Map();
 
       for (const userId of userIds) {
         try {
@@ -326,6 +351,7 @@ function createPushNotificationService({
             cutoff,
             summary,
             vapid,
+            boxscores,
           });
         } catch (error) {
           console.error(
@@ -345,6 +371,7 @@ function createPushNotificationService({
     cutoff,
     summary,
     vapid,
+    boxscores,
   }) {
     if (favorites.length === 0) return;
     const { reports } = await afterActionReportService.listReports(userId, {
@@ -370,6 +397,7 @@ function createPushNotificationService({
       ),
     );
 
+    const favoritePlayers = await weeklyPlayerReportService.listFavorites(userId);
     for (const report of fresh) {
       if (alreadySent.has(report.gameId)) continue;
       // Claim before sending so concurrent dispatches cannot double send.
@@ -383,8 +411,21 @@ function createPushNotificationService({
       );
       if (!claimed || !unmuted) continue;
 
+      let boxscore;
+      if (favoritePlayers.length > 0) {
+        if (!boxscores.has(report.gameId)) {
+          boxscores.set(
+            report.gameId,
+            scheduleService.getGameBoxscore(report.gameId).catch((error) => {
+              console.error(`Push boxscore ${report.gameId} failed:`, error?.message);
+              return null;
+            }),
+          );
+        }
+        boxscore = await boxscores.get(report.gameId);
+      }
       const payload = {
-        ...buildNotification(report),
+        ...buildNotification(report, favoritePlayers, boxscore),
         gameId: report.gameId,
         tag: `aar-${report.gameId}`,
         readToken: sessionJwt.signReadToken({ userId, gameId: report.gameId }),
@@ -400,4 +441,4 @@ function createPushNotificationService({
   }
 }
 
-module.exports = { createPushNotificationService };
+module.exports = { createPushNotificationService, buildNotification };
