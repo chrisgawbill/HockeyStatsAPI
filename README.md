@@ -64,6 +64,8 @@ The workflow `.github/workflows/after-action-push.yml` runs `bin/aar-push-cron.j
 
 ### Favorite players and the Weekly Player Report
 
+After Action Report pushes also highlight the user's favorite skaters who scored in that game: goals, assists, multi-point games, and hat tricks. Highlights precede the final score; players are matched by NHL player ID against the cached game boxscore, shared across users during dispatch. With no scoring favorites or an unavailable boxscore, the notification shows the final score. Game eligibility and team mute settings are unchanged.
+
 Migration 005 adds `favorite_players` (at most 10 per user), the frozen `weekly_player_reports` (one per user per week, payload stored as JSON so reopening never re-fetches), the sent ledger `weekly_player_report_pushes`, and `users.weekly_report_push` (default on).
 
 | Route | Auth | Purpose |

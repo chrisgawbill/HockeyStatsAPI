@@ -10,6 +10,7 @@ const {
 } = require('#slices/afterActionReports/afterActionReportService.js');
 const {
   createPushNotificationService,
+  buildNotification,
 } = require('#slices/pushNotifications/pushNotificationService.js');
 const {
   createAfterActionReportsRouter,
@@ -170,11 +171,16 @@ function fakeDb() {
   return db;
 }
 
-function build({ games, sendImpl } = {}) {
+function build({ games, sendImpl, favoritePlayers = [], boxscore, boxscoreError } = {}) {
   const db = fakeDb();
   const scheduleCalls = { season: [], recent: [] };
   const gameList = games ?? [game({ gameId: 100 })];
   const scheduleService = {
+    getGameBoxscore: async () => {
+      scheduleCalls.boxscores = (scheduleCalls.boxscores ?? 0) + 1;
+      if (boxscoreError) throw boxscoreError;
+      return boxscore;
+    },
     getTeamSchedule: async (triCode) => {
       scheduleCalls.season.push(triCode);
       return { games: [] };
@@ -204,6 +210,8 @@ function build({ games, sendImpl } = {}) {
     withTransaction: db.withTransaction,
     sessionJwt,
     afterActionReportService,
+    weeklyPlayerReportService: { listFavorites: async () => favoritePlayers },
+    scheduleService,
     webPush,
     now: () => NOW,
   });
@@ -233,6 +241,54 @@ const json = (body) => JSON.stringify(body);
 const subscribeBody = (endpoint = ENDPOINT) =>
   json({ endpoint, keys: { p256dh: 'p', auth: 'a' } });
 const cronHeaders = (secret = CRON) => ({ authorization: `Bearer ${secret}` });
+
+test('game notification highlights only favorite skaters and their scoring milestones', () => {
+  const favorites = [
+    { playerId: 1, name: 'Goal Scorer' },
+    { playerId: 2, name: 'Play Maker' },
+    { playerId: 3, name: 'Multi Point' },
+    { playerId: 4, name: 'Hat Trick' },
+    { playerId: 5, name: 'No Points' },
+  ];
+  const boxscore = { playerByGameStats: {
+    homeTeam: { forwards: [
+      { playerId: 1, goals: 1, assists: 0 },
+      { playerId: 2, goals: 0, assists: 1 },
+      { playerId: 4, goals: 3, assists: 1 },
+      { playerId: 5, goals: 0, assists: 0 },
+      { playerId: 99, goals: 2, assists: 0 },
+    ] },
+    awayTeam: { defense: [{ playerId: 3, goals: 1, assists: 1 }] },
+  } };
+  const result = buildNotification(game({ periodType: 'OT' }), favorites, boxscore);
+  assert.equal(result.body, 'Goal Scorer: 1 goal · Play Maker: 1 assist · Multi Point: 1 goal, 1 assist — 2-point game! · Hat Trick: 3 goals, 1 assist — hat trick! · MTL 2 @ TOR 4 (OT)');
+  assert.equal(buildNotification(game(), favorites).body, 'MTL 2 @ TOR 4');
+  assert.equal(buildNotification(game(), [], boxscore).body, 'MTL 2 @ TOR 4');
+});
+
+test('dispatch personalizes game notifications and shares the boxscore across users', async () => {
+  const ctx = build({
+    favoritePlayers: [{ playerId: 1, name: 'Favorite Player' }],
+    boxscore: { playerByGameStats: { homeTeam: { forwards: [
+      { playerId: 1, goals: 0, assists: 2 },
+    ] } } },
+  });
+  await setupUser(ctx, 7, ['TOR']);
+  await setupUser(ctx, 8, ['TOR'], ['https://push.example.com/send/u8']);
+  assert.equal((await dispatch(ctx)).sent, 2);
+  assert.equal(ctx.sent[0].payload.body, 'Favorite Player: 2 assists — 2-point game! · MTL 2 @ TOR 4');
+  assert.equal(ctx.scheduleCalls.boxscores, 1);
+});
+
+test('dispatch still sends the score when the boxscore is unavailable', async () => {
+  const ctx = build({
+    favoritePlayers: [{ playerId: 1, name: 'Favorite Player' }],
+    boxscoreError: new Error('NHL unavailable'),
+  });
+  await setupUser(ctx, 7, ['TOR']);
+  assert.equal((await dispatch(ctx)).sent, 1);
+  assert.equal(ctx.sent[0].payload.body, 'MTL 2 @ TOR 4');
+});
 
 async function dispatch(ctx) {
   const response = await request(ctx.push, '/api/push/dispatch', {
