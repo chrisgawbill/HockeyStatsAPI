@@ -1,23 +1,23 @@
-var axios = require('axios');
+const axios = require('axios');
 
-var axiosNhl = axios.create({
+const axiosNhl = axios.create({
   baseURL: 'https://api-web.nhle.com/v1',
   timeout: 10000,
 });
-var axiosNhlTeam = axios.create({
+const axiosNhlTeam = axios.create({
   baseURL: 'https://api.nhle.com/stats/rest/en/team',
   timeout: 10000,
 });
-var axiosNhlStats = axios.create({
+const axiosNhlStats = axios.create({
   baseURL: 'https://api.nhle.com/stats/rest/en/skater',
   timeout: 10000,
 });
-var axiosNhlGoalie = axios.create({
+const axiosNhlGoalie = axios.create({
   baseURL: 'https://api.nhle.com/stats/rest/en/goalie',
   timeout: 10000,
 });
 
-var axiosNhlShifts = axios.create({
+const axiosNhlShifts = axios.create({
   baseURL: 'https://api.nhle.com/stats/rest/en',
   timeout: 10000,
 });

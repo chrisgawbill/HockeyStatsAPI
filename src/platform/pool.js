@@ -4,32 +4,34 @@ const {
   getSslConfig,
 } = require('#platform/connectionConfig.js');
 
-let pool = null;
+let dbPool = null;
 
 // Bound how long a connect/query may block so a misconfigured or unreachable
 // database fails fast instead of hanging request handlers indefinitely.
 const DB_TIMEOUT_MS = Number(process.env.DATABASE_TIMEOUT_MS) || 5000;
 
+/** Lazily creates the shared application database pool. */
 function getDbPool() {
   const connectionString = getDatabaseUrl();
   if (!connectionString) {
     throw new Error('DATABASE_URL or CACHE_DATABASE_URL is required.');
   }
-  if (!pool) {
-    pool = new Pool({
+  if (!dbPool) {
+    dbPool = new Pool({
       connectionString,
       ssl: getSslConfig(),
       connectionTimeoutMillis: DB_TIMEOUT_MS,
       statement_timeout: DB_TIMEOUT_MS,
       query_timeout: DB_TIMEOUT_MS,
     });
-    pool.on('error', (err) => {
-      console.error('DB pool error:', err.message);
+    dbPool.on('error', (error) => {
+      console.error('DB pool error:', error.message);
     });
   }
-  return pool;
+  return dbPool;
 }
 
+/** Runs `callback` with a pooled client and always releases it afterwards. */
 async function withDbClient(callback) {
   const client = await getDbPool().connect();
   try {
@@ -39,13 +41,14 @@ async function withDbClient(callback) {
   }
 }
 
+/** Runs `callback` inside BEGIN/COMMIT, rolling back and rethrowing on failure. */
 async function withTransaction(callback) {
   return await withDbClient(async (client) => {
     await client.query('BEGIN');
     try {
-      const result = await callback(client);
+      const callbackResult = await callback(client);
       await client.query('COMMIT');
-      return result;
+      return callbackResult;
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -53,12 +56,13 @@ async function withTransaction(callback) {
   });
 }
 
+/** Closes the application database pool, if one was created. */
 async function closeDbPool() {
-  if (!pool) {
+  if (!dbPool) {
     return;
   }
-  await pool.end();
-  pool = null;
+  await dbPool.end();
+  dbPool = null;
 }
 
 module.exports = {

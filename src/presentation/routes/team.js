@@ -25,16 +25,16 @@ function createTeamRouter({
   router.get('/roster/:triCode', async (req, res, next) => {
     try {
       res.send(await rosterService.getRoster(req.params.triCode, req.seasonId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/lines/:triCode', async (req, res, next) => {
     try {
       res.send(await lineService.getLines(req.params.triCode, req.seasonId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -43,8 +43,8 @@ function createTeamRouter({
       res.send(
         await scheduleService.getTeamSchedule(req.params.triCode, req.seasonId),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -53,8 +53,8 @@ function createTeamRouter({
       res.send(
         await teamService.getTeamSummary(req.params.teamId, req.seasonId),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

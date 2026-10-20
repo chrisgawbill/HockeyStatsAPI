@@ -10,6 +10,13 @@ const {
   mapStatLeaderPayload,
 } = require('#slices/statLeaders/mappers/statLeaderDbMapper.js');
 
+/**
+ * Upserts one category's leaders (and the players they reference) in a single
+ * transaction. The season row goes first because everything references it, and
+ * players go before leaders because stat_leaders.player_id references players.
+ * Batching keeps the transaction to a handful of statements so the shared
+ * seasons-row lock is held only briefly.
+ */
 async function persistStatLeaders({
   seasonId,
   playerType,
@@ -17,7 +24,7 @@ async function persistStatLeaders({
   leadersPayload,
   teamScope = 'all',
 }) {
-  const mapped = mapStatLeaderPayload({
+  const mappedLeaders = mapStatLeaderPayload({
     seasonId,
     playerType,
     category,
@@ -26,9 +33,6 @@ async function persistStatLeaders({
   });
 
   return await withTransaction(async (client) => {
-    // Create/lock the FK-parent season row first (children reference it), then
-    // batch the children. Batching keeps the whole transaction ~a handful of
-    // statements, so the shared seasons-row lock is held only briefly.
     await seasonsRepository.upsertSeason(
       client,
       buildSeason(seasonId, {
@@ -36,18 +40,29 @@ async function persistStatLeaders({
       }),
     );
 
-    // Players before leaders: stat_leaders.player_id references players.
     const playersUpserted = await playersRepository.upsertPlayers(
       client,
-      mapped.rows.map((row) => row.player),
+      mappedLeaders.rows.map((mappedRow) => mappedRow.player),
     );
     const leadersUpserted = await statLeadersRepository.upsertStatLeaders(
       client,
-      mapped.rows.map((row) => row.leader),
+      mappedLeaders.rows.map((mappedRow) => mappedRow.leader),
     );
 
-    return { playersUpserted, leadersUpserted, skipped: mapped.skipped };
+    return { playersUpserted, leadersUpserted, skipped: mappedLeaders.skipped };
   });
+}
+
+/**
+ * The NHL API 404s a category (rather than returning an empty list) when
+ * nobody qualifies for it yet, e.g. no goalie has a shutout early in a season.
+ * Treats that as "no leaders yet" and rethrows every other error.
+ */
+function emptyLeadersWhenCategoryMissing(error) {
+  if (error?.status === 404 || error?.response?.status === 404) {
+    return {};
+  }
+  throw error;
 }
 
 /**
@@ -62,40 +77,30 @@ async function persistStatLeaders({
  */
 function createStatLeaderService({ nhlApi, cache, runServiceTask }) {
   const { axiosNhl } = nhlApi;
-  const { GetOrFetch, CACHE_TYPES } = cache;
+  const { getOrFetchCached, CACHE_TYPES } = cache;
 
   /** Shared read path for both player types; only the NHL path segment differs. */
   async function getLeaders(playerType, category, seasonId) {
     const endpoint =
       playerType === 'goalie' ? 'goalie-stats-leaders' : 'skater-stats-leaders';
-    const raw = await GetOrFetch(
+    const leadersPayload = await getOrFetchCached(
       CACHE_TYPES.STAT_LEADERS,
       `${playerType}_${category}_${seasonId}`,
       () =>
         axiosNhl
           .get(`/${endpoint}/${seasonId}/2?categories=${category}&limit=10`)
-          .then((r) => r.data)
-          .catch((error) => {
-            // The NHL API 404s a category (rather than returning an empty
-            // list) when nobody currently qualifies for it yet — routine
-            // early in a season, e.g. no goalie has a shutout after a
-            // handful of games. Treat that as "no leaders yet", not a
-            // failure; any other status/network error still propagates.
-            if (error?.status === 404 || error?.response?.status === 404) {
-              return {};
-            }
-            throw error;
-          }),
+          .then((response) => response.data)
+          .catch(emptyLeadersWhenCategoryMissing),
     );
     runServiceTask(`${playerType} leaders ${category} ${seasonId}`, () =>
       persistStatLeaders({
         seasonId,
         playerType,
         category,
-        leadersPayload: raw,
+        leadersPayload,
       }),
     );
-    return mapStatLeaders(raw, category);
+    return mapStatLeaders(leadersPayload, category);
   }
 
   return {

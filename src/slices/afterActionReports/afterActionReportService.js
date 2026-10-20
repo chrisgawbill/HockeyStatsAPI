@@ -44,22 +44,22 @@ function buildAfterActionReports({
   readGameIds,
   limit = MAX_REPORTS,
 }) {
-  const read = new Set(readGameIds);
-  const byGameId = new Map();
+  const readGameIdSet = new Set(readGameIds);
+  const reportsByGameId = new Map();
 
   for (const { triCode, since } of favorites) {
     for (const game of gamesByTeam[triCode] ?? []) {
       if (!COMPLETED_GAME_STATES.has(game.gameState)) continue;
       if (!startedAfterFavorite(game, since)) continue;
 
-      const existing = byGameId.get(game.gameId);
-      if (existing) {
-        if (!existing.favoriteTeams.includes(triCode)) {
-          existing.favoriteTeams.push(triCode);
+      const existingReport = reportsByGameId.get(game.gameId);
+      if (existingReport) {
+        if (!existingReport.favoriteTeams.includes(triCode)) {
+          existingReport.favoriteTeams.push(triCode);
         }
         continue;
       }
-      byGameId.set(game.gameId, {
+      reportsByGameId.set(game.gameId, {
         gameId: game.gameId,
         date: game.date,
         gameTime: game.gameTime,
@@ -72,16 +72,16 @@ function buildAfterActionReports({
         periodType: game.periodType ?? null,
         isPlayoff: Boolean(game.isPlayoff),
         favoriteTeams: [triCode],
-        read: read.has(game.gameId),
+        read: readGameIdSet.has(game.gameId),
       });
     }
   }
 
-  const reports = [...byGameId.values()]
-    .sort((a, b) =>
-      a.date === b.date
-        ? String(b.gameTime).localeCompare(String(a.gameTime))
-        : b.date.localeCompare(a.date),
+  const reports = [...reportsByGameId.values()]
+    .sort((reportA, reportB) =>
+      reportA.date === reportB.date
+        ? String(reportB.gameTime).localeCompare(String(reportA.gameTime))
+        : reportB.date.localeCompare(reportA.date),
     )
     .slice(0, limit);
 
@@ -93,33 +93,36 @@ function buildAfterActionReports({
 
 /** Season games overlaid with the fresher current-week games, keyed by id. */
 function mergeTeamGames(seasonGames, recentGames) {
-  const byId = new Map();
-  for (const game of seasonGames ?? []) byId.set(game.gameId, game);
-  for (const game of recentGames ?? []) byId.set(game.gameId, game);
-  return [...byId.values()];
+  const gamesById = new Map();
+  for (const game of seasonGames ?? []) gamesById.set(game.gameId, game);
+  for (const game of recentGames ?? []) gamesById.set(game.gameId, game);
+  return [...gamesById.values()];
 }
 
-function normalizeTriCode(triCode) {
-  const normalized = String(triCode ?? '').toUpperCase();
-  if (!TRI_CODE_PATTERN.test(normalized)) {
+/** Upper-cases and validates a team tri-code from user input; throws 400 if malformed. */
+function parseTriCode(triCode) {
+  const upperCaseTriCode = String(triCode ?? '').toUpperCase();
+  if (!TRI_CODE_PATTERN.test(upperCaseTriCode)) {
     throw createError(400, 'Invalid team tri-code.');
   }
-  return normalized;
+  return upperCaseTriCode;
 }
 
-function normalizeGameId(gameId) {
-  const normalized = Number(gameId);
-  if (!Number.isSafeInteger(normalized) || normalized <= 0) {
+/** Parses a game id from user input; throws 400 unless it is a positive safe integer. */
+function parseGameId(gameId) {
+  const parsedGameId = Number(gameId);
+  if (!Number.isSafeInteger(parsedGameId) || parsedGameId <= 0) {
     throw createError(400, 'Invalid game id.');
   }
-  return normalized;
+  return parsedGameId;
 }
 
-function toFavorite(row) {
+/** Maps a favorite_teams row to the API shape. */
+function mapFavoriteRow(favoriteRow) {
   return {
-    triCode: row.team_tri_code,
-    since: new Date(row.created_at).toISOString(),
-    pushMuted: Boolean(row.push_muted),
+    triCode: favoriteRow.team_tri_code,
+    since: new Date(favoriteRow.created_at).toISOString(),
+    pushMuted: Boolean(favoriteRow.push_muted),
   };
 }
 
@@ -140,11 +143,12 @@ function createAfterActionReportService({
   seasons,
   scheduleService,
 }) {
+  /** The user's favorite teams, in the API shape. */
   async function listFavorites(userId) {
-    const rows = await withTransaction((client) =>
+    const favoriteRows = await withTransaction((client) =>
       repository.listFavoriteTeams(client, userId),
     );
-    return rows.map(toFavorite);
+    return favoriteRows.map(mapFavoriteRow);
   }
 
   /**
@@ -153,30 +157,33 @@ function createAfterActionReportService({
    */
   async function loadGamesByTeam(triCodes, { fresh = false } = {}) {
     const seasonId = seasons.getCurrentSeasonId();
-    const settled = await Promise.allSettled(
+    const teamOutcomes = await Promise.allSettled(
       triCodes.map(async (triCode) => {
-        const [season, recent] = await Promise.allSettled([
+        const [seasonOutcome, recentOutcome] = await Promise.allSettled([
           scheduleService.getTeamSchedule(triCode, seasonId),
           scheduleService.getRecentTeamGames(triCode, { fresh }),
         ]);
-        if (season.status === 'rejected' && recent.status === 'rejected') {
-          throw season.reason;
+        if (
+          seasonOutcome.status === 'rejected' &&
+          recentOutcome.status === 'rejected'
+        ) {
+          throw seasonOutcome.reason;
         }
         return mergeTeamGames(
-          season.status === 'fulfilled' ? season.value.games : [],
-          recent.status === 'fulfilled' ? recent.value.games : [],
+          seasonOutcome.status === 'fulfilled' ? seasonOutcome.value.games : [],
+          recentOutcome.status === 'fulfilled' ? recentOutcome.value.games : [],
         );
       }),
     );
 
     const gamesByTeam = {};
-    settled.forEach((result, index) => {
-      if (result.status === 'fulfilled') {
-        gamesByTeam[triCodes[index]] = result.value;
+    teamOutcomes.forEach((teamOutcome, index) => {
+      if (teamOutcome.status === 'fulfilled') {
+        gamesByTeam[triCodes[index]] = teamOutcome.value;
       } else {
         console.error(
           `After Action Reports: schedule for ${triCodes[index]} failed:`,
-          result.reason?.message ?? result.reason,
+          teamOutcome.reason?.message ?? teamOutcome.reason,
         );
       }
     });
@@ -197,7 +204,7 @@ function createAfterActionReportService({
     const gamesByTeam =
       preloaded.gamesByTeam ??
       (await loadGamesByTeam(favorites.map((favorite) => favorite.triCode)));
-    const candidate = buildAfterActionReports({
+    const candidateReports = buildAfterActionReports({
       favorites,
       gamesByTeam,
       readGameIds: [],
@@ -205,7 +212,7 @@ function createAfterActionReportService({
     const readGameIds = await withTransaction((client) =>
       repository.listReadGameIds(client, {
         userId,
-        gameIds: candidate.reports.map((report) => report.gameId),
+        gameIds: candidateReports.reports.map((report) => report.gameId),
       }),
     );
     return buildAfterActionReports({ favorites, gamesByTeam, readGameIds });
@@ -215,46 +222,50 @@ function createAfterActionReportService({
     listFavorites,
     loadGamesByTeam,
 
+    /** Mutes or unmutes pushes for a favorite team; 404 if the team is not a favorite. */
     async setPushMuted(userId, triCode, muted) {
-      const normalized = normalizeTriCode(triCode);
+      const validTriCode = parseTriCode(triCode);
       if (typeof muted !== 'boolean') {
         throw createError(400, 'muted must be a boolean.');
       }
-      const updated = await withTransaction((client) =>
+      const updatedCount = await withTransaction((client) =>
         repository.updateFavoritePushMuted(client, {
           userId,
-          triCode: normalized,
+          triCode: validTriCode,
           muted,
         }),
       );
-      if (!updated) throw createError(404, 'Team is not a favorite.');
+      if (!updatedCount) throw createError(404, 'Team is not a favorite.');
       return { favorites: await listFavorites(userId) };
     },
 
+    /** Favorites a team for the user and returns the updated favorites. */
     async addFavorite(userId, triCode) {
-      const normalized = normalizeTriCode(triCode);
+      const validTriCode = parseTriCode(triCode);
       await withTransaction((client) =>
-        repository.insertFavoriteTeam(client, { userId, triCode: normalized }),
+        repository.insertFavoriteTeam(client, { userId, triCode: validTriCode }),
       );
       return { favorites: await listFavorites(userId) };
     },
 
+    /** Removes a favorite team and returns the updated favorites. */
     async removeFavorite(userId, triCode) {
-      const normalized = normalizeTriCode(triCode);
+      const validTriCode = parseTriCode(triCode);
       await withTransaction((client) =>
-        repository.deleteFavoriteTeam(client, { userId, triCode: normalized }),
+        repository.deleteFavoriteTeam(client, { userId, triCode: validTriCode }),
       );
       return { favorites: await listFavorites(userId) };
     },
 
     listReports,
 
+    /** Marks one game's report read for the user. */
     async markRead(userId, gameId) {
-      const normalized = normalizeGameId(gameId);
+      const validGameId = parseGameId(gameId);
       await withTransaction((client) =>
         repository.insertReadGameIds(client, {
           userId,
-          gameIds: [normalized],
+          gameIds: [validGameId],
         }),
       );
     },
@@ -262,11 +273,11 @@ function createAfterActionReportService({
     /** Marks every report currently in the inbox as read. */
     async markAllRead(userId) {
       const { reports } = await listReports(userId);
-      const unread = reports.filter((report) => !report.read);
+      const unreadReports = reports.filter((report) => !report.read);
       await withTransaction((client) =>
         repository.insertReadGameIds(client, {
           userId,
-          gameIds: unread.map((report) => report.gameId),
+          gameIds: unreadReports.map((report) => report.gameId),
         }),
       );
       return {

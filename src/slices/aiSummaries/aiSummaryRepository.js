@@ -1,7 +1,8 @@
 const { toJsonParam } = require('#platform/jsonParam.js');
 
+/** Inserts or updates an AI summary and returns the stored row. */
 async function upsertAiSummary(client, summary) {
-  const result = await client.query(
+  const { rows: upsertedSummaryRows } = await client.query(
     `
 		INSERT INTO ai_summaries (
 			team_id,
@@ -42,14 +43,15 @@ async function upsertAiSummary(client, summary) {
       toJsonParam(summary.sourceNotes, []),
     ],
   );
-  return result.rows[0];
+  return upsertedSummaryRows[0];
 }
 
+/** Fetches a stored AI summary, or null. */
 async function getAiSummary(
   client,
   { triCode, summaryType = 'team_history', promptVersion = 'v1' },
 ) {
-  const result = await client.query(
+  const { rows: summaryRows } = await client.query(
     `
 		SELECT *
 		FROM ai_summaries
@@ -59,7 +61,7 @@ async function getAiSummary(
 		`,
     [triCode, summaryType, promptVersion],
   );
-  return result.rows[0] ?? null;
+  return summaryRows[0] ?? null;
 }
 
 module.exports = {

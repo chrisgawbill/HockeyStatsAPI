@@ -10,7 +10,7 @@ const CACHE_TYPES = { SCHEDULE: 'schedule' };
 /** Cache stub that always calls through to the fetcher (no persistence). */
 const passthroughCache = {
   CACHE_TYPES,
-  GetOrFetch: (type, key, fetcher) => fetcher(),
+  getOrFetchCached: (type, key, fetcher) => fetcher(),
   writeCache: async () => {},
 };
 

@@ -1,15 +1,15 @@
-var fs = require('fs');
-var path = require('path');
+const fs = require('fs');
+const path = require('path');
 const { Pool } = require('pg');
 const { getSslConfig } = require('#platform/connectionConfig.js');
 
-const inFlight = new Map();
+const inFlightFetches = new Map();
 let cachePool = null;
 let cacheTableReady = false;
 
-// How long cache DB connects/queries may take before failing. Keeps the
-// health and cache-usage endpoints (and thus the diagnostics page) responsive
-// when the cache DB is configured but unreachable.
+// Fail fast instead of hanging when the cache DB is configured but
+// unreachable or slow, so the health and cache-usage endpoints (and the
+// diagnostics page) stay responsive.
 const CACHE_DB_TIMEOUT_MS =
   Number(process.env.CACHE_DATABASE_TIMEOUT_MS) || 5000;
 
@@ -45,6 +45,7 @@ const CACHE_DIRS = {
   [CACHE_TYPES.SHIFTS]: path.join(CACHE_ROOT, 'shifts-cache/'),
 };
 
+/** Cache lifetimes in ms. Official shift charts never change once the game is OFF, so they never expire. */
 const CACHE_TTLS = {
   [CACHE_TYPES.PLAYER]: 24 * 60 * 60 * 1000,
   [CACHE_TYPES.ROSTER]: 24 * 60 * 60 * 1000,
@@ -53,14 +54,15 @@ const CACHE_TTLS = {
   [CACHE_TYPES.STANDINGS]: 24 * 60 * 60 * 1000,
   [CACHE_TYPES.STAT_LEADERS]: 24 * 60 * 60 * 1000,
   [CACHE_TYPES.TEAM]: 24 * 60 * 60 * 1000,
-  // Official shift charts never change once the game is OFF.
   [CACHE_TYPES.SHIFTS]: Infinity,
 };
 
+/** Returns the TTL for a cache type, letting `options.ttlMs` override it. */
 function getTtl(type, options = {}) {
   return options.ttlMs ?? CACHE_TTLS[type];
 }
 
+/** Resolves the storage mode from CACHE_STORAGE, falling back on whether a cache DB is configured. */
 function getCacheStorageMode() {
   const requestedMode = (process.env.CACHE_STORAGE ?? '').trim().toLowerCase();
   if (VALID_CACHE_STORAGE_MODES.has(requestedMode)) {
@@ -71,6 +73,7 @@ function getCacheStorageMode() {
     : CACHE_STORAGE_MODES.FILESYSTEM;
 }
 
+/** True when entries should be read from and written to the Postgres cache. */
 function usesExternalCache() {
   const mode = getCacheStorageMode();
   return (
@@ -80,6 +83,7 @@ function usesExternalCache() {
   );
 }
 
+/** True when entries should be read from and written to the cache directory. */
 function usesLocalCache() {
   const mode = getCacheStorageMode();
   return (
@@ -88,35 +92,39 @@ function usesLocalCache() {
   );
 }
 
-function isFresh(timestamp, ttlMs) {
-  return ttlMs === Infinity || Date.now() - timestamp < ttlMs;
+/** True when the entry is younger than `ttlMs` (or never expires). */
+function isFresh(cachedAtMs, ttlMs) {
+  return ttlMs === Infinity || Date.now() - cachedAtMs < ttlMs;
 }
 
-function makeCacheId(type, key) {
+/** Builds the unique cache key `type:key` used in Postgres and for in-flight tracking. */
+function buildCacheId(type, key) {
   return `${type}:${key}`;
 }
 
+/**
+ * Lazily creates the shared pool for the cache database, or returns null when
+ * none is configured. The pool logs 'error' events because an unhandled one
+ * from an idle client would crash the process.
+ */
 function getCachePool() {
   if (!process.env.CACHE_DATABASE_URL) return null;
   if (!cachePool) {
     cachePool = new Pool({
       connectionString: process.env.CACHE_DATABASE_URL,
       ssl: getSslConfig(),
-      // Fail fast instead of hanging when the cache DB is configured but
-      // unreachable/slow. Without this, health and cache-usage probes block
-      // indefinitely and the diagnostics page never loads.
       connectionTimeoutMillis: CACHE_DB_TIMEOUT_MS,
       statement_timeout: CACHE_DB_TIMEOUT_MS,
       query_timeout: CACHE_DB_TIMEOUT_MS,
     });
-    // A pool 'error' on an idle client would otherwise crash the process.
-    cachePool.on('error', (err) => {
-      console.error('Cache DB pool error:', err.message);
+    cachePool.on('error', (error) => {
+      console.error('Cache DB pool error:', error.message);
     });
   }
   return cachePool;
 }
 
+/** Closes the cache database pool, if one was created. */
 async function closeCachePool() {
   if (!cachePool) {
     return;
@@ -125,6 +133,7 @@ async function closeCachePool() {
   cachePool = null;
 }
 
+/** Creates the app_cache table and indexes once per process; returns the pool, or null if no cache DB is configured. */
 async function ensureExternalCacheTable() {
   const pool = getCachePool();
   if (!pool || cacheTableReady) return pool;
@@ -163,6 +172,7 @@ async function ensureExternalCacheTable() {
   return pool;
 }
 
+/** Reads a fresh entry from the cache directory, or null when missing, stale or unreadable. */
 async function readLocalCache(type, key, ttlMs) {
   const filePath = path.join(CACHE_DIRS[type], `${key}.json`);
   try {
@@ -174,34 +184,37 @@ async function readLocalCache(type, key, ttlMs) {
   return null;
 }
 
-async function writeLocalCache(type, key, data) {
+/** Writes an entry, stamped with the current time, to the cache directory. */
+async function writeLocalCache(type, key, value) {
   const filePath = path.join(CACHE_DIRS[type], `${key}.json`);
   await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
   await fs.promises.writeFile(
     filePath,
-    JSON.stringify({ timestamp: Date.now(), data }),
+    JSON.stringify({ timestamp: Date.now(), data: value }),
   );
 }
 
+/** Reads a fresh entry from the Postgres cache, or null when missing, stale or unreachable. */
 async function readExternalCache(type, key, ttlMs) {
   try {
     const pool = await ensureExternalCacheTable();
     if (!pool) return null;
-    const result = await pool.query(
+    const { rows: cacheRows } = await pool.query(
       'SELECT timestamp_ms, data FROM app_cache WHERE cache_key = $1',
-      [makeCacheId(type, key)],
+      [buildCacheId(type, key)],
     );
-    const row = result.rows[0];
-    if (!row) return null;
-    if (!isFresh(Number(row.timestamp_ms), ttlMs)) return null;
-    return row.data;
+    const [cacheRow] = cacheRows;
+    if (!cacheRow) return null;
+    if (!isFresh(Number(cacheRow.timestamp_ms), ttlMs)) return null;
+    return cacheRow.data;
   } catch (error) {
     console.error(`Failed to read external ${type} cache for ${key}:`, error);
     return null;
   }
 }
 
-async function writeExternalCache(type, key, data) {
+/** Upserts an entry into the Postgres cache; failures are logged, never thrown. */
+async function writeExternalCache(type, key, value) {
   try {
     const pool = await ensureExternalCacheTable();
     if (!pool) return;
@@ -215,13 +228,14 @@ async function writeExternalCache(type, key, data) {
 				data = EXCLUDED.data,
 				updated_at = now()
 			`,
-      [makeCacheId(type, key), type, key, Date.now(), data],
+      [buildCacheId(type, key), type, key, Date.now(), value],
     );
   } catch (error) {
     console.error(`Failed to write external ${type} cache for ${key}:`, error);
   }
 }
 
+/** Reads a bundled seed entry (used to warm an empty cache), or null when none exists. */
 async function readSeedCache(type, key) {
   const filePath = path.join(CACHE_SEED_ROOT, `${type}-cache`, `${key}.json`);
   try {
@@ -231,69 +245,77 @@ async function readSeedCache(type, key) {
   return null;
 }
 
+/** Looks an entry up in the external cache, then the local cache, then the seed files; null on a miss. */
 async function readCache(type, key, options = {}) {
   const ttlMs = getTtl(type, options);
 
   if (usesExternalCache()) {
-    const external = await readExternalCache(type, key, ttlMs);
-    if (external !== null) return external;
+    const externalEntry = await readExternalCache(type, key, ttlMs);
+    if (externalEntry !== null) return externalEntry;
   }
 
   if (usesLocalCache()) {
-    const local = await readLocalCache(type, key, ttlMs);
-    if (local !== null) return local;
+    const localEntry = await readLocalCache(type, key, ttlMs);
+    if (localEntry !== null) return localEntry;
   }
 
-  const seed = await readSeedCache(type, key);
-  if (seed !== null) {
-    await writeCache(type, key, seed);
-    return seed;
+  const seedEntry = await readSeedCache(type, key);
+  if (seedEntry !== null) {
+    await writeCache(type, key, seedEntry);
+    return seedEntry;
   }
 
   return null;
 }
 
-async function writeCache(type, key, data) {
+/** Writes an entry to every enabled cache store. */
+async function writeCache(type, key, value) {
   if (usesExternalCache()) {
-    await writeExternalCache(type, key, data);
+    await writeExternalCache(type, key, value);
   }
   if (usesLocalCache()) {
     try {
-      await writeLocalCache(type, key, data);
+      await writeLocalCache(type, key, value);
     } catch (error) {
       console.error(`Failed to write local ${type} cache for ${key}:`, error);
     }
   }
 }
 
-async function GetOrFetch(type, key, fetcher, options = {}) {
-  const cached = await readCache(type, key, options);
-  if (cached !== null) {
-    return cached;
+/**
+ * Returns the cached value for `type`/`key`, calling `fetcher` on a miss and
+ * caching its result. Concurrent misses for the same entry share one fetch.
+ */
+async function getOrFetchCached(type, key, fetcher, options = {}) {
+  const cachedValue = await readCache(type, key, options);
+  if (cachedValue !== null) {
+    return cachedValue;
   }
-  const inFlightKey = `${type}:${key}`;
-  if (inFlight.has(inFlightKey)) {
-    return await inFlight.get(inFlightKey);
+  const inFlightKey = buildCacheId(type, key);
+  if (inFlightFetches.has(inFlightKey)) {
+    return await inFlightFetches.get(inFlightKey);
   }
-  const promise = fetcher()
-    .then(async (data) => {
+  const fetchPromise = fetcher()
+    .then(async (fetchedValue) => {
       try {
-        await writeCache(type, key, data);
+        await writeCache(type, key, fetchedValue);
       } catch (error) {
         console.error(`Failed to write ${type} cache for ${key}:`, error);
       }
-      return data;
+      return fetchedValue;
     })
-    .finally(() => inFlight.delete(inFlightKey));
+    .finally(() => inFlightFetches.delete(inFlightKey));
 
-  inFlight.set(inFlightKey, promise);
-  return await promise;
+  inFlightFetches.set(inFlightKey, fetchPromise);
+  return await fetchPromise;
 }
 
+/** True when a cache database URL is set. */
 async function isExternalCacheConfigured() {
   return Boolean(process.env.CACHE_DATABASE_URL);
 }
 
+/** True when the cache database accepts a trivial query. */
 async function isExternalCacheReachable() {
   try {
     const pool = await ensureExternalCacheTable();
@@ -305,11 +327,12 @@ async function isExternalCacheReachable() {
   }
 }
 
+/** Reports per-type entry counts and byte sizes of the Postgres cache, or null if unavailable. */
 async function getExternalCacheUsage() {
   try {
     const pool = await ensureExternalCacheTable();
     if (!pool) return null;
-    const result = await pool.query(`
+    const { rows: usageRows } = await pool.query(`
 			SELECT
 				type,
 				COUNT(*)::int AS entries,
@@ -317,24 +340,20 @@ async function getExternalCacheUsage() {
 			FROM app_cache
 			GROUP BY type
 		`);
-    // pg_column_size(data) above is the size of the cached payload only.
-    // pg_total_relation_size is the real on-disk footprint of the table,
-    // including indexes, TOAST, and per-row overhead, so the diagnostics
-    // page can show both "stored data" and "size on disk".
-    const tableResult = await pool.query(
+    const { rows: tableSizeRows } = await pool.query(
       `SELECT pg_total_relation_size('app_cache')::bigint AS table_bytes`,
     );
     const sections = {};
     let totalEntries = 0;
     let totalBytes = 0;
-    for (const row of result.rows) {
-      const entries = Number(row.entries);
-      const bytes = Number(row.bytes);
-      sections[row.type] = { entries, bytes };
+    for (const usageRow of usageRows) {
+      const entries = Number(usageRow.entries);
+      const bytes = Number(usageRow.bytes);
+      sections[usageRow.type] = { entries, bytes };
       totalEntries += entries;
       totalBytes += bytes;
     }
-    const tableBytes = Number(tableResult.rows[0]?.table_bytes ?? 0);
+    const tableBytes = Number(tableSizeRows[0]?.table_bytes ?? 0);
     return { sections, totalEntries, totalBytes, tableBytes };
   } catch (error) {
     console.error('Failed to inspect external cache usage:', error);
@@ -342,6 +361,7 @@ async function getExternalCacheUsage() {
   }
 }
 
+/** Totals per-type byte sizes and finds the largest type. */
 function summarizeSections(sections) {
   let total = 0;
   for (const size of Object.values(sections)) {
@@ -359,7 +379,8 @@ function summarizeSections(sections) {
   return { sections, largestSection, total };
 }
 
-function getExternalByteSections(externalUsage) {
+/** Reduces external usage to a map of cache type to bytes. */
+function pickExternalByteSections(externalUsage) {
   const sections = {};
   for (const [type, section] of Object.entries(externalUsage.sections)) {
     sections[type] = section.bytes;
@@ -367,16 +388,18 @@ function getExternalByteSections(externalUsage) {
   return sections;
 }
 
+/** True when the cache root exists (or can be created) and is writable. */
 async function isCacheWritable() {
   try {
     await fs.promises.mkdir(CACHE_ROOT, { recursive: true });
     await fs.promises.access(CACHE_ROOT, fs.constants.W_OK);
     return true;
-  } catch (e) {
+  } catch {
     return false;
   }
 }
 
+/** Reports byte sizes of the cache directories, summarized like the external usage. */
 async function getLocalCacheUsage() {
   const sections = {};
   for (const [type, dir] of Object.entries(CACHE_DIRS)) {
@@ -385,10 +408,11 @@ async function getLocalCacheUsage() {
   return summarizeSections(sections);
 }
 
+/** Combines local and external cache usage for the diagnostics endpoints. */
 async function getCacheUsage() {
-  const local = await getLocalCacheUsage();
+  const localUsage = await getLocalCacheUsage();
   const externalUsage = await getExternalCacheUsage();
-  let external = {
+  let externalSummary = {
     configured: await isExternalCacheConfigured(),
     reachable: false,
     sections: {},
@@ -397,7 +421,7 @@ async function getCacheUsage() {
     tableBytes: 0,
   };
   if (externalUsage) {
-    external = {
+    externalSummary = {
       configured: true,
       reachable: true,
       ...externalUsage,
@@ -407,10 +431,10 @@ async function getCacheUsage() {
   const useExternalTotals = usesExternalCache();
   const primary =
     useExternalTotals && externalUsage
-      ? summarizeSections(getExternalByteSections(externalUsage))
+      ? summarizeSections(pickExternalByteSections(externalUsage))
       : useExternalTotals
         ? summarizeSections({})
-        : local;
+        : localUsage;
 
   return {
     storageMode: getCacheStorageMode(),
@@ -418,27 +442,28 @@ async function getCacheUsage() {
       ? CACHE_STORAGE_MODES.POSTGRES
       : CACHE_STORAGE_MODES.FILESYSTEM,
     ...primary,
-    local,
-    external,
+    local: localUsage,
+    external: externalSummary,
   };
 }
 
+/** Sums the sizes of the regular files directly inside a directory; 0 if it is unreadable. */
 async function dirSize(dir) {
   let total = 0;
-  let files;
+  let fileNames;
   try {
-    files = await fs.promises.readdir(dir);
-  } catch (e) {
+    fileNames = await fs.promises.readdir(dir);
+  } catch {
     return 0;
   }
 
-  for (const file of files) {
+  for (const fileName of fileNames) {
     try {
-      const stat = await fs.promises.stat(path.join(dir, file));
+      const stat = await fs.promises.stat(path.join(dir, fileName));
       if (stat.isFile()) {
         total += stat.size;
       }
-    } catch (e) {
+    } catch {
       continue;
     }
   }
@@ -449,7 +474,7 @@ module.exports = {
   readCache,
   writeCache,
   CACHE_TYPES,
-  GetOrFetch,
+  getOrFetchCached,
   isCacheWritable,
   getCacheStorageMode,
   isExternalCacheConfigured,

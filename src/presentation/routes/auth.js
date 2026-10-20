@@ -12,23 +12,23 @@ function createAuthRouter({ authService }) {
   router.post('/google', async (req, res, next) => {
     try {
       const { credential } = req.body || {};
-      const result = await authService.signInWithGoogle(credential);
-      res.send(result);
-    } catch (e) {
-      next(e);
+      const signedInUser = await authService.signInWithGoogle(credential);
+      res.send(signedInUser);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/me', async (req, res, next) => {
     try {
-      const header = req.get('authorization') || '';
-      const [scheme, token] = header.split(' ');
+      const authorizationHeader = req.get('authorization') || '';
+      const [scheme, token] = authorizationHeader.split(' ');
       if (scheme !== 'Bearer' || !token) {
         throw createError(401, 'Unauthorized');
       }
       res.send(await authService.getSessionUser(token));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

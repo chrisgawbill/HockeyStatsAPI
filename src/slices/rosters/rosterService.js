@@ -9,17 +9,20 @@ const {
   mapRosterPayload,
 } = require('#slices/rosters/mappers/rosterDbMapper.js');
 
+/**
+ * Upserts a team's roster in one transaction. The season row goes first (FK
+ * parent), then the optional team and players, before the roster entries that
+ * reference seasons, players and teams.
+ */
 async function persistRoster({
   seasonId,
   triCode,
   teamId = null,
   rosterPayload,
 }) {
-  const mapped = mapRosterPayload({ seasonId, triCode, teamId, rosterPayload });
+  const mappedRoster = mapRosterPayload({ seasonId, triCode, teamId, rosterPayload });
 
   return await withTransaction(async (client) => {
-    // Season row first (FK parent), then the optional team and players before
-    // roster entries (roster_entries references seasons, players, and teams).
     await seasonsRepository.upsertSeason(
       client,
       buildSeason(seasonId, { roster: rosterPayload ?? null }),
@@ -33,17 +36,17 @@ async function persistRoster({
 
     const playersUpserted = await playersRepository.upsertPlayers(
       client,
-      mapped.rows.map((row) => row.player),
+      mappedRoster.rows.map((mappedRow) => mappedRow.player),
     );
     const rosterEntriesUpserted = await rostersRepository.upsertRosterEntries(
       client,
-      mapped.rows.map((row) => row.rosterEntry),
+      mappedRoster.rows.map((mappedRow) => mappedRow.rosterEntry),
     );
 
     return {
       playersUpserted,
       rosterEntriesUpserted,
-      skipped: mapped.skipped,
+      skipped: mappedRoster.skipped,
     };
   });
 }
@@ -59,21 +62,21 @@ async function persistRoster({
  */
 function createRosterService({ nhlApi, cache, runServiceTask }) {
   const { axiosNhl } = nhlApi;
-  const { GetOrFetch, CACHE_TYPES } = cache;
+  const { getOrFetchCached, CACHE_TYPES } = cache;
 
   return {
     /** Normalized RosterContract for one team/season. */
     async getRoster(triCode, seasonId) {
-      const raw = await GetOrFetch(
+      const rosterPayload = await getOrFetchCached(
         CACHE_TYPES.ROSTER,
         `${triCode}_${seasonId}`,
         () =>
-          axiosNhl.get(`/roster/${triCode}/${seasonId}`).then((r) => r.data),
+          axiosNhl.get(`/roster/${triCode}/${seasonId}`).then((response) => response.data),
       );
       runServiceTask(`roster ${triCode} ${seasonId}`, () =>
-        persistRoster({ seasonId, triCode, rosterPayload: raw }),
+        persistRoster({ seasonId, triCode, rosterPayload }),
       );
-      return mapRoster(raw);
+      return mapRoster(rosterPayload);
     },
 
     persistRoster,

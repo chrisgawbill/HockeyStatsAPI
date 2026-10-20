@@ -5,6 +5,7 @@ const READ_TOKEN_PURPOSE = 'aar-read';
 const WEEKLY_READ_TOKEN_PURPOSE = 'wpr-read';
 const WEEK_START_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Returns the JWT signing secret, failing loudly when it is not configured. */
 function getSecret() {
   const secret = process.env.SESSION_JWT_SECRET;
   if (!secret) {

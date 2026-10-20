@@ -14,8 +14,8 @@ function createStandingsRouter({ standingsService }) {
   router.get('/', validateSeason, async (req, res, next) => {
     try {
       res.send(await standingsService.getStandings(req.seasonId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

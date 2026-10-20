@@ -12,27 +12,26 @@ const { mapGame } = require('#slices/schedule/mappers/scheduleMapper.js');
  * Upserts a season schedule into `schedule_games`.
  *
  * Accepts either the weekly schedule payload (`{ gameWeek: [...] }`) or the
- * club-schedule payload (`{ games: [...] }`).
+ * club-schedule payload (`{ games: [...] }`). The season row goes first (FK
+ * parent), then teams, then games, which reference teams. Batching dedupes the
+ * ~32 teams the payload repeats ~80x each, so `teamsUpserted` counts unique teams.
  */
 async function persistSchedule({
   seasonId,
   schedulePayload,
   sourceLabel = 'schedule',
 }) {
-  const mapped = mapSchedulePayload({ seasonId, schedulePayload });
+  const mappedSchedule = mapSchedulePayload({ seasonId, schedulePayload });
 
   const teams = [];
   const games = [];
-  for (const { homeTeam, awayTeam, game } of mapped.rows) {
+  for (const { homeTeam, awayTeam, game } of mappedSchedule.rows) {
     if (homeTeam) teams.push(homeTeam);
     if (awayTeam) teams.push(awayTeam);
     games.push(game);
   }
 
   return await withTransaction(async (client) => {
-    // Season row first (FK parent), then teams before games
-    // (schedule_games references teams). Batching dedupes the ~32 teams that
-    // the payload repeats ~80x each, so teamsUpserted now counts unique teams.
     await seasonsRepository.upsertSeason(
       client,
       buildSeason(seasonId, { [sourceLabel]: schedulePayload ?? null }),
@@ -44,21 +43,23 @@ async function persistSchedule({
       games,
     );
 
-    return { gamesUpserted, teamsUpserted, skipped: mapped.skipped };
+    return { gamesUpserted, teamsUpserted, skipped: mappedSchedule.skipped };
   });
 }
 
 /**
  * Flatten the raw weekly season payload into a list of ScheduleGameContract.
  * The week supplies date/dayAbbrev; each of its games is mapped with that ctx.
- * @param {{ gameWeek?: any[] }} raw
+ * @param {{ gameWeek?: any[] }} weeklyPayload
  * @returns {import("./mappers/scheduleMapper.js").ScheduleGameContract[]}
  */
-function mapSeasonSchedule(raw) {
+function mapSeasonSchedule(weeklyPayload) {
   const games = [];
-  for (const week of raw?.gameWeek ?? []) {
-    for (const g of week.games ?? []) {
-      games.push(mapGame(g, { date: week.date, dayAbbrev: week.dayAbbrev }));
+  for (const week of weeklyPayload?.gameWeek ?? []) {
+    for (const rawGame of week.games ?? []) {
+      games.push(
+        mapGame(rawGame, { date: week.date, dayAbbrev: week.dayAbbrev }),
+      );
     }
   }
   return games;
@@ -82,19 +83,36 @@ const RECENT_TEAM_GAMES_TTL_MS = 10 * 60 * 1000;
  * Maps a raw club-schedule payload (season or week) to ScheduleGameContracts
  * sorted by calendar date. Club schedules carry the date on each game.
  */
-function mapClubGames(raw) {
-  return (raw?.games ?? [])
-    .map((g) =>
-      mapGame(g, {
-        date: g.gameDate,
-        dayAbbrev: shortDayOfWeek(g.gameDate),
+function mapClubGames(clubSchedulePayload) {
+  return (clubSchedulePayload?.games ?? [])
+    .map((rawGame) =>
+      mapGame(rawGame, {
+        date: rawGame.gameDate,
+        dayAbbrev: shortDayOfWeek(rawGame.gameDate),
       }),
     )
     .sort(
-      (a, b) =>
-        new Date(`${a.date}T12:00:00`).getTime() -
-        new Date(`${b.date}T12:00:00`).getTime(),
+      (earlierGame, laterGame) =>
+        new Date(`${earlierGame.date}T12:00:00`).getTime() -
+        new Date(`${laterGame.date}T12:00:00`).getTime(),
     );
+}
+
+/**
+ * Lists the weekly-endpoint start dates (YYYY-MM-DD, 7 days apart) that cover a
+ * season, from September 1 of its start year through June 30 of its end year.
+ */
+function listSeasonWeekDates(seasonId) {
+  const startYear = Number(seasonId.slice(0, 4));
+  const seasonEnd = new Date(`${startYear + 1}-06-30`);
+
+  const weekDates = [];
+  const weekStart = new Date(`${startYear}-09-01`);
+  while (weekStart <= seasonEnd) {
+    weekDates.push(weekStart.toISOString().split('T')[0]);
+    weekStart.setDate(weekStart.getDate() + 7);
+  }
+  return weekDates;
 }
 
 /**
@@ -111,15 +129,14 @@ function mapClubGames(raw) {
  */
 function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
   const { axiosNhl } = nhlApi;
-  const { GetOrFetch, writeCache, CACHE_TYPES } = cache;
+  const { getOrFetchCached, writeCache, CACHE_TYPES } = cache;
 
   /**
    * Fetches a whole season's schedule from the NHL weekly endpoint. The NHL only
    * serves a week at a time, so this walks the season in 7-day steps and merges
    * every week's games into one raw `{ gameWeek }` payload (failed weeks are
    * skipped rather than failing the whole fetch). Always walks the full season
-   * (September 1 of the start year through June 30 of the end year) regardless
-   * of whether `seasonId` is the current season or a past one — the current
+   * regardless of whether `seasonId` is the current season or a past one — the current
    * season's cache entry is kept fresh separately by the scheduled refresh
    * (see platform/refreshScheduler.js), not by narrowing this range, so
    * schedule/date logic elsewhere (SchedulePage's date paging, the
@@ -129,26 +146,17 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
    * @returns {Promise<{ gameWeek: any[] }>} Raw, unmapped weekly payloads combined.
    */
   async function fetchSeasonSchedule(seasonId) {
-    const startYear = Number(seasonId.slice(0, 4));
-    const startDate = new Date(`${startYear}-09-01`);
-    const endDate = new Date(`${startYear + 1}-06-30`);
-
-    const weekDates = [];
-    const cur = new Date(startDate);
-    while (cur <= endDate) {
-      weekDates.push(cur.toISOString().split('T')[0]);
-      cur.setDate(cur.getDate() + 7);
-    }
-
     const responses = await Promise.all(
-      weekDates.map((date) =>
+      listSeasonWeekDates(seasonId).map((date) =>
         axiosNhl.get(`/schedule/${date}`).catch(() => null),
       ),
     );
 
     const allGameWeeks = [];
-    for (const resp of responses) {
-      if (resp?.data?.gameWeek) allGameWeeks.push(...resp.data.gameWeek);
+    for (const response of responses) {
+      if (response?.data?.gameWeek) {
+        allGameWeeks.push(...response.data.gameWeek);
+      }
     }
     return { gameWeek: allGameWeeks };
   }
@@ -160,32 +168,34 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * the request.
      */
     async getSeasonSchedule(seasonId) {
-      const raw = await GetOrFetch(CACHE_TYPES.SCHEDULE, seasonId, () =>
-        fetchSeasonSchedule(seasonId),
+      const schedulePayload = await getOrFetchCached(
+        CACHE_TYPES.SCHEDULE,
+        seasonId,
+        () => fetchSeasonSchedule(seasonId),
       );
       runServiceTask(`season schedule ${seasonId}`, () =>
-        persistSchedule({ seasonId, schedulePayload: raw }),
+        persistSchedule({ seasonId, schedulePayload }),
       );
-      return { games: mapSeasonSchedule(raw) };
+      return { games: mapSeasonSchedule(schedulePayload) };
     },
 
     /** Raw gamecenter landing payload for one game (short TTL passthrough). */
     async getGameLanding(gameID) {
-      return await GetOrFetch(
+      return await getOrFetchCached(
         CACHE_TYPES.SCHEDULE,
         `landing_${gameID}`,
-        () => axiosNhl.get(`/gamecenter/${gameID}/landing`).then((r) => r.data),
+        () => axiosNhl.get(`/gamecenter/${gameID}/landing`).then((response) => response.data),
         { ttlMs: 5 * 60 * 1000 },
       );
     },
 
     /** Raw gamecenter boxscore payload for one game (short TTL passthrough). */
     async getGameBoxscore(gameID) {
-      return await GetOrFetch(
+      return await getOrFetchCached(
         CACHE_TYPES.SCHEDULE,
         `boxscore_${gameID}`,
         () =>
-          axiosNhl.get(`/gamecenter/${gameID}/boxscore`).then((r) => r.data),
+          axiosNhl.get(`/gamecenter/${gameID}/boxscore`).then((response) => response.data),
         { ttlMs: 5 * 60 * 1000 },
       );
     },
@@ -199,11 +209,11 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
     async refreshScheduleCache() {
       try {
         const seasonId = seasons.getCurrentSeasonId();
-        const data = await fetchSeasonSchedule(seasonId);
-        await writeCache(CACHE_TYPES.SCHEDULE, seasonId, data);
+        const schedulePayload = await fetchSeasonSchedule(seasonId);
+        await writeCache(CACHE_TYPES.SCHEDULE, seasonId, schedulePayload);
         console.log('Schedule cache refreshed at', new Date().toISOString());
-      } catch (e) {
-        console.error('Failed to refresh schedule cache:', e);
+      } catch (error) {
+        console.error('Failed to refresh schedule cache:', error);
       }
     },
 
@@ -213,22 +223,22 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * router simply composes both services.
      */
     async getTeamSchedule(triCode, seasonId) {
-      const raw = await GetOrFetch(
+      const clubSchedulePayload = await getOrFetchCached(
         CACHE_TYPES.SCHEDULE,
         `team_${triCode}_${seasonId}`,
         () =>
           axiosNhl
             .get(`/club-schedule-season/${triCode}/${seasonId}`)
-            .then((r) => r.data),
+            .then((response) => response.data),
       );
       runServiceTask(`club schedule ${triCode} ${seasonId}`, () =>
         persistSchedule({
           seasonId,
-          schedulePayload: raw,
+          schedulePayload: clubSchedulePayload,
           sourceLabel: 'clubSchedule',
         }),
       );
-      return { games: mapClubGames(raw) };
+      return { games: mapClubGames(clubSchedulePayload) };
     },
 
     /**
@@ -238,16 +248,16 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * `{ fresh: true }` skips the cache read (push dispatch) but still refills it.
      */
     async getRecentTeamGames(triCode, { fresh = false } = {}) {
-      const raw = await GetOrFetch(
+      const weekPayload = await getOrFetchCached(
         CACHE_TYPES.SCHEDULE,
         `team_${triCode}_week_now`,
         () =>
           axiosNhl
             .get(`/club-schedule/${triCode}/week/now`)
-            .then((r) => r.data),
+            .then((response) => response.data),
         { ttlMs: fresh ? 0 : RECENT_TEAM_GAMES_TTL_MS },
       );
-      return { games: mapClubGames(raw) };
+      return { games: mapClubGames(weekPayload) };
     },
 
     persistSchedule,

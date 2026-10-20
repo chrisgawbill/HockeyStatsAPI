@@ -1,21 +1,24 @@
-var fs = require('fs');
+const fs = require('fs');
 
+/** Reads the CA certificate from DATABASE_CA_CERT, which holds either the PEM text or a file path. */
 function getCaCert() {
-  const raw = process.env.DATABASE_CA_CERT;
-  if (!raw) {
+  const caCertSetting = process.env.DATABASE_CA_CERT;
+  if (!caCertSetting) {
     return undefined;
   }
 
-  if (raw.includes('-----BEGIN CERTIFICATE-----')) {
-    return raw;
+  if (caCertSetting.includes('-----BEGIN CERTIFICATE-----')) {
+    return caCertSetting;
   }
-  return fs.readFileSync(raw, 'utf-8');
+  return fs.readFileSync(caCertSetting, 'utf-8');
 }
 
+/** Returns the application database URL, falling back to the cache database URL. */
 function getDatabaseUrl() {
   return process.env.DATABASE_URL || process.env.CACHE_DATABASE_URL;
 }
 
+/** Builds the pg `ssl` option from env: false when disabled, a verified CA config in production, else undefined. */
 function getSslConfig() {
   if (process.env.CACHE_DATABASE_SSL === 'false') {
     return false;

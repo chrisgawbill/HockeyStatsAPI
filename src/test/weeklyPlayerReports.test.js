@@ -140,10 +140,12 @@ function fakeDb() {
     nextId: 1,
     clock: 0,
   };
-  const key = (u, w) => `${u}:${w}`;
-  const reportRow = (u, w) => {
-    const r = db.reports.get(key(u, w));
-    return r && { user_id: u, week_start: w, ...r };
+  const key = (userId, weekStart) => `${userId}:${weekStart}`;
+  const reportRow = (userId, weekStart) => {
+    const storedReport = db.reports.get(key(userId, weekStart));
+    return (
+      storedReport && { user_id: userId, week_start: weekStart, ...storedReport }
+    );
   };
   const client = {
     async query(sql, params = []) {
@@ -151,8 +153,8 @@ function fakeDb() {
       if (sql.includes('INSERT INTO favorite_players')) {
         const [user_id, player_id, full_name, team, position, headshot, limit] =
           params;
-        const mine = db.favorites.filter((f) => f.user_id === user_id);
-        const existing = mine.find((f) => f.player_id === String(player_id));
+        const mine = db.favorites.filter((favorite) => favorite.user_id === user_id);
+        const existing = mine.find((favorite) => favorite.player_id === String(player_id));
         if (existing) {
           Object.assign(existing, { full_name, team_tri_code: team });
           return { rows: [], rowCount: 1 };
@@ -172,23 +174,25 @@ function fakeDb() {
       }
       if (sql.includes('DELETE FROM favorite_players')) {
         db.favorites = db.favorites.filter(
-          (f) =>
-            !(f.user_id === params[0] && f.player_id === String(params[1])),
+          (favorite) =>
+            !(favorite.user_id === params[0] && favorite.player_id === String(params[1])),
         );
         return { rows: [] };
       }
       if (sql.includes('FROM favorite_players') && sql.includes('WHERE')) {
         return {
-          rows: db.favorites.filter((f) => f.user_id === params[0]),
+          rows: db.favorites.filter((favorite) => favorite.user_id === params[0]),
         };
       }
       if (sql.includes('FROM favorite_players')) {
         return { rows: [...db.favorites] };
       }
       if (sql.includes('INSERT INTO weekly_player_reports')) {
-        const [u, w, payload] = params;
-        if (db.reports.has(key(u, w))) return { rows: [], rowCount: 0 };
-        db.reports.set(key(u, w), {
+        const [userId, weekStart, payload] = params;
+        if (db.reports.has(key(userId, weekStart))) {
+          return { rows: [], rowCount: 0 };
+        }
+        db.reports.set(key(userId, weekStart), {
           payload: JSON.parse(payload),
           created_at: new Date(NOW),
           read_at: null,
@@ -218,9 +222,11 @@ function fakeDb() {
       if (sql.includes('FROM weekly_player_reports') && sql.includes('LIMIT')) {
         return {
           rows: [...db.reports.keys()]
-            .filter((k) => k.startsWith(`${params[0]}:`))
-            .map((k) => reportRow(params[0], k.split(':')[1]))
-            .sort((a, b) => b.week_start.localeCompare(a.week_start))
+            .filter((reportKey) => reportKey.startsWith(`${params[0]}:`))
+            .map((reportKey) => reportRow(params[0], reportKey.split(':')[1]))
+            .sort((reportA, reportB) =>
+              reportB.week_start.localeCompare(reportA.week_start),
+            )
             .slice(0, params[1]),
         };
       }
@@ -231,8 +237,8 @@ function fakeDb() {
       if (sql.includes('FROM weekly_player_reports')) {
         return {
           rows: [...db.reports.keys()]
-            .filter((k) => k.endsWith(`:${params[0]}`))
-            .map((k) => reportRow(k.split(':')[0], params[0])),
+            .filter((reportKey) => reportKey.endsWith(`:${params[0]}`))
+            .map((reportKey) => reportRow(reportKey.split(':')[0], params[0])),
         };
       }
       if (sql.includes('SELECT weekly_report_push')) {
@@ -250,18 +256,24 @@ function fakeDb() {
       }
       if (sql.includes('SELECT DISTINCT user_id')) {
         return {
-          rows: [...new Set(db.subs.map((s) => s.user_id))].map((user_id) => ({
+          rows: [
+            ...new Set(db.subs.map((subscription) => subscription.user_id)),
+          ].map((user_id) => ({
             user_id,
           })),
         };
       }
       if (sql.includes('DELETE FROM push_subscriptions WHERE id')) {
-        db.subs = db.subs.filter((s) => s.id !== params[0]);
+        db.subs = db.subs.filter(
+          (subscription) => subscription.id !== params[0],
+        );
         return { rows: [] };
       }
       if (sql.includes('FROM push_subscriptions')) {
         return {
-          rows: db.subs.filter((s) => String(s.user_id) === String(params[0])),
+          rows: db.subs.filter(
+            (subscription) => String(subscription.user_id) === String(params[0]),
+          ),
         };
       }
       throw new Error(`Unexpected SQL: ${sql}`);
@@ -284,12 +296,12 @@ function fakeCache() {
   return {
     store,
     CACHE_TYPES: { PLAYER: 'player', SCHEDULE: 'schedule' },
-    async GetOrFetch(type, key, fetcher) {
+    async getOrFetchCached(type, key, fetcher) {
       const k = `${type}:${key}`;
       if (store.has(k)) return store.get(k);
-      const data = await fetcher();
-      store.set(k, data);
-      return data;
+      const value = await fetcher();
+      store.set(k, value);
+      return value;
     },
   };
 }
@@ -626,10 +638,10 @@ test('favorite players: add, list, remove, validation, auth, and the cap of 10',
   ]);
   assert.equal((await favorite(ctx, 7, 'abc')).status, 400);
   assert.equal((await favorite(ctx, 7, 1234)).status, 404);
-  const list = await request(ctx.favorites, '/api/favorite-players', {
+  const favoritesResponse = await request(ctx.favorites, '/api/favorite-players', {
     headers: auth(7),
   });
-  assert.equal(list.body.favorites.length, 1);
+  assert.equal(favoritesResponse.body.favorites.length, 1);
   const removed = await request(
     ctx.favorites,
     `/api/favorite-players/${MCDAVID}`,
@@ -648,7 +660,7 @@ test('favorite players: add, list, remove, validation, auth, and the cap of 10',
   // Landing lookups are cached.
   await favorite(ctx, 7, 9000001);
   assert.equal(
-    ctx.calls.nhl.filter((u) => u === '/player/9000001/landing').length,
+    ctx.calls.nhl.filter((url) => url === '/player/9000001/landing').length,
     1,
   );
 });
@@ -709,7 +721,7 @@ test('normal week: one batched NHL load, reports for active users, one push each
   });
   // One schedule call, one skater query, one goalie query for all users.
   assert.deepEqual(
-    ctx.calls.nhl.filter((u) => u.startsWith('/schedule/')),
+    ctx.calls.nhl.filter((url) => url.startsWith('/schedule/')),
     [`/schedule/${WEEK}`],
   );
   assert.equal(ctx.calls.skaters.length, 1);
@@ -785,7 +797,7 @@ test('gone subscriptions are removed; read reports are not pushed', async () => 
   assert.equal(response.body.removed, 1);
   assert.equal(response.body.sent, 0);
   assert.equal(
-    ctx.db.subs.some((s) => s.user_id === 7),
+    ctx.db.subs.some((subscription) => subscription.user_id === 7),
     false,
   );
 
@@ -813,15 +825,15 @@ test('reports list, single report, read receipts, and the push read token', asyn
   await seedUsers(ctx);
   await weeklyDispatch(ctx);
 
-  const list = await request(ctx.reports, '/api/weekly-player-reports', {
+  const reportsResponse = await request(ctx.reports, '/api/weekly-player-reports', {
     headers: auth(7),
   });
-  assert.equal(list.status, 200);
-  assert.equal(list.body.unreadCount, 1);
-  assert.equal(list.body.reports[0].weekStart, WEEK);
-  assert.equal(list.body.reports[0].label, 'Oct 12–18');
-  assert.equal(list.body.reports[0].players.length, 4);
-  assert.equal(list.body.reports[0].read, false);
+  assert.equal(reportsResponse.status, 200);
+  assert.equal(reportsResponse.body.unreadCount, 1);
+  assert.equal(reportsResponse.body.reports[0].weekStart, WEEK);
+  assert.equal(reportsResponse.body.reports[0].label, 'Oct 12–18');
+  assert.equal(reportsResponse.body.reports[0].players.length, 4);
+  assert.equal(reportsResponse.body.reports[0].read, false);
 
   const single = await request(
     ctx.reports,

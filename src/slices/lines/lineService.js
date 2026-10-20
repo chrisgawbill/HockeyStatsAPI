@@ -8,26 +8,31 @@ const PRELIM_SHIFTS_TTL_MS = 5 * 60 * 1000;
 const COMPLETED_STATES = new Set(['OFF', 'FINAL']);
 
 class EmptyPayloadError extends Error {
+  /** Carries the empty payload so the caller can cache it briefly instead of permanently. */
   constructor(payload) {
     super('NHL payload has no usable rows');
     this.payload = payload;
   }
 }
 
+/** True for a final game that has already started (a game with no parseable start counts as started). */
 function isCompleted(game, nowMs) {
   if (!COMPLETED_STATES.has(game.gameState)) return false;
-  const start = Date.parse(game.gameTime);
-  return Number.isFinite(start) ? start <= nowMs : true;
+  const startMs = Date.parse(game.gameTime);
+  return Number.isFinite(startMs) ? startMs <= nowMs : true;
 }
 
-function latestCompleted(games, nowMs) {
-  const done = (games ?? []).filter((g) => isCompleted(g, nowMs));
-  done.sort(
-    (a, b) =>
-      (Date.parse(b.gameTime) || 0) - (Date.parse(a.gameTime) || 0) ||
-      String(b.date).localeCompare(String(a.date)),
+/** The most recent completed game by start time, then date; null if none. */
+function findLatestCompletedGame(games, nowMs) {
+  const completedGames = (games ?? []).filter((game) =>
+    isCompleted(game, nowMs),
   );
-  return done[0] ?? null;
+  completedGames.sort(
+    (gameA, gameB) =>
+      (Date.parse(gameB.gameTime) || 0) - (Date.parse(gameA.gameTime) || 0) ||
+      String(gameB.date).localeCompare(String(gameA.date)),
+  );
+  return completedGames[0] ?? null;
 }
 
 /**
@@ -42,27 +47,37 @@ function latestCompleted(games, nowMs) {
  * @param {{ nhlApi: any, cache: any, seasons: any, scheduleService: any, now?: () => number }} deps
  */
 function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
-  const { GetOrFetch, readCache, writeCache, CACHE_TYPES } = cache;
+  const { getOrFetchCached, readCache, writeCache, CACHE_TYPES } = cache;
   const clock = now ?? (() => Date.now());
 
-  async function findGame(triCode, seasonId) {
+  /**
+   * The team's latest completed game: this week's short-TTL schedule first for
+   * the current season, then the full season schedule.
+   */
+  async function findLatestGame(triCode, seasonId) {
     const nowMs = clock();
     if (seasonId === seasons.getCurrentSeasonId()) {
-      const { games } = await scheduleService.getRecentTeamGames(triCode);
-      const recent = latestCompleted(games, nowMs);
-      if (recent) return recent;
+      const { games: recentGames } =
+        await scheduleService.getRecentTeamGames(triCode);
+      const recentGame = findLatestCompletedGame(recentGames, nowMs);
+      if (recentGame) return recentGame;
     }
-    const { games } = await scheduleService.getTeamSchedule(triCode, seasonId);
-    return latestCompleted(games, nowMs);
+    const { games: seasonGames } = await scheduleService.getTeamSchedule(
+      triCode,
+      seasonId,
+    );
+    return findLatestCompletedGame(seasonGames, nowMs);
   }
 
+  /** Fetches the raw shift chart for a game. */
   async function fetchShifts(gameId) {
-    const res = await nhlApi.axiosNhlShifts.get(
+    const response = await nhlApi.axiosNhlShifts.get(
       `/shiftcharts?cayenneExp=gameId=${gameId}`,
     );
-    return res.data;
+    return response.data;
   }
 
+  /** True when a shift-chart payload contains at least one real shift. */
   const hasShiftRows = (payload) => (payload?.data ?? []).some(isShiftRow);
 
   /**
@@ -75,28 +90,33 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
   async function getGamePayload(game, permanentKey, fetcher, hasData) {
     const prelimKey = `${permanentKey}_prelim`;
     if (game.gameState === 'OFF') {
-      const prelim = await readCache(CACHE_TYPES.SHIFTS, prelimKey, {
+      const prelimPayload = await readCache(CACHE_TYPES.SHIFTS, prelimKey, {
         ttlMs: PRELIM_SHIFTS_TTL_MS,
       });
-      if (prelim && !hasData(prelim)) return prelim;
+      if (prelimPayload && !hasData(prelimPayload)) return prelimPayload;
       try {
-        // Throwing from the fetcher makes GetOrFetch skip the write.
-        return await GetOrFetch(CACHE_TYPES.SHIFTS, permanentKey, async () => {
-          const payload = await fetcher();
-          if (!hasData(payload)) throw new EmptyPayloadError(payload);
-          return payload;
-        });
+        // Throwing from the fetcher makes getOrFetchCached skip the write.
+        return await getOrFetchCached(
+          CACHE_TYPES.SHIFTS,
+          permanentKey,
+          async () => {
+            const payload = await fetcher();
+            if (!hasData(payload)) throw new EmptyPayloadError(payload);
+            return payload;
+          },
+        );
       } catch (error) {
         if (!(error instanceof EmptyPayloadError)) throw error;
         await writeCache(CACHE_TYPES.SHIFTS, prelimKey, error.payload);
         return error.payload;
       }
     }
-    return await GetOrFetch(CACHE_TYPES.SHIFTS, prelimKey, fetcher, {
+    return await getOrFetchCached(CACHE_TYPES.SHIFTS, prelimKey, fetcher, {
       ttlMs: PRELIM_SHIFTS_TTL_MS,
     });
   }
 
+  /** The game's shift chart, cached permanently once the game is OFF. */
   const getShiftPayload = (game) =>
     getGamePayload(
       game,
@@ -105,15 +125,18 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
       hasShiftRows,
     );
 
+  /** Fetches a game's play-by-play and keeps only the faceoff plays, so the cached payload stays small. */
   async function fetchFaceoffs(gameId) {
-    const res = await nhlApi.axiosNhl.get(`/gamecenter/${gameId}/play-by-play`);
-    // Store only the faceoff plays to keep the cached payload small.
-    const plays = (res.data?.plays ?? []).filter(
-      (p) => p?.typeDescKey === 'faceoff',
+    const response = await nhlApi.axiosNhl.get(
+      `/gamecenter/${gameId}/play-by-play`,
     );
-    return { plays };
+    const faceoffPlays = (response.data?.plays ?? []).filter(
+      (play) => play?.typeDescKey === 'faceoff',
+    );
+    return { plays: faceoffPlays };
   }
 
+  /** The game's faceoff plays, cached like the shift chart. */
   const getFaceoffPayload = (game) =>
     getGamePayload(
       game,
@@ -122,11 +145,11 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
       (payload) => (payload?.plays ?? []).length > 0,
     );
 
-  // Faceoffs only refine the center pick, so a failure never fails the request.
+  /** Faceoff plays for the game; they only refine the center pick, so a failure yields []. */
   async function getFaceoffs(game) {
     try {
-      const payload = await getFaceoffPayload(game);
-      return payload?.plays ?? [];
+      const faceoffPayload = await getFaceoffPayload(game);
+      return faceoffPayload?.plays ?? [];
     } catch (error) {
       console.error(
         `Play-by-play fetch failed for game ${game.gameId}:`,
@@ -137,25 +160,26 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
   }
 
   return {
+    /** Forward lines, D pairs and starting goalie from the team's latest completed game. */
     async getLines(triCode, seasonId) {
-      const game = await findGame(triCode, seasonId);
+      const game = await findLatestGame(triCode, seasonId);
       if (!game) return emptyLines();
 
-      let payload;
+      let shiftPayload;
       let rawRoster;
       let faceoffs;
       try {
-        [payload, faceoffs] = await Promise.all([
+        [shiftPayload, faceoffs] = await Promise.all([
           getShiftPayload(game),
           getFaceoffs(game),
         ]);
-        rawRoster = await GetOrFetch(
+        rawRoster = await getOrFetchCached(
           CACHE_TYPES.ROSTER,
           `${triCode}_${seasonId}`,
           () =>
             nhlApi.axiosNhl
               .get(`/roster/${triCode}/${seasonId}`)
-              .then((r) => r.data),
+              .then((response) => response.data),
         );
       } catch (error) {
         console.error(
@@ -165,13 +189,13 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
         return emptyLines();
       }
 
-      const built = buildLines({
-        shifts: payload?.data ?? [],
+      const lines = buildLines({
+        shifts: shiftPayload?.data ?? [],
         rawRoster,
         triCode,
         faceoffs,
       });
-      if (!built) return emptyLines();
+      if (!lines) return emptyLines();
 
       const isHome = game.homeTeam === triCode;
       return {
@@ -182,7 +206,7 @@ function createLineService({ nhlApi, cache, seasons, scheduleService, now }) {
           opponent: isHome ? game.awayTeam : game.homeTeam,
           homeAway: isHome ? 'home' : 'away',
         },
-        ...built,
+        ...lines,
       };
     },
   };

@@ -9,10 +9,17 @@ const inFlightServiceTasks = new Set();
 // is a cheap structural guard that makes that overlap impossible.
 let queueTail = Promise.resolve();
 
+/** True when a database is configured for persisting domain data. */
 function isDomainPersistenceConfigured() {
   return Boolean(process.env.DATABASE_URL || process.env.CACHE_DATABASE_URL);
 }
 
+/**
+ * Queues a fire-and-forget persistence task. Skips silently when persistence
+ * is disabled or unconfigured, or when a task with the same label is already
+ * queued or running. A failed task is logged and swallowed so it never stalls
+ * the queue. Always returns null.
+ */
 function runServiceTask(label, serviceFn) {
   if (process.env.DISABLE_DOMAIN_PERSISTENCE === 'true') return null;
   if (!isDomainPersistenceConfigured()) return null;
@@ -22,7 +29,6 @@ function runServiceTask(label, serviceFn) {
   queueTail = queueTail
     .then(() => serviceFn())
     .catch((error) => {
-      // Log and swallow so one failed task never stalls the queue.
       console.error(`Domain service task failed for ${label}:`, error);
     })
     .finally(() => inFlightServiceTasks.delete(label));
@@ -30,8 +36,10 @@ function runServiceTask(label, serviceFn) {
   return null;
 }
 
-// Test-only seam: resolves once the currently-queued tasks have drained. Not
-// part of the fire-and-forget contract — callers never await runServiceTask.
+/**
+ * Test-only seam: resolves once the currently-queued tasks have drained. Not
+ * part of the fire-and-forget contract — callers never await runServiceTask.
+ */
 function whenIdle() {
   return queueTail;
 }

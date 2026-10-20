@@ -11,20 +11,46 @@ const EMPTY_STREAK = Object.freeze({ wins: {}, lastWinDate: null });
  * parse). Every `wins` value is the literal `true`, so overlapping keys never
  * conflict — there is nothing to reconcile beyond "the key is present".
  *
- * @param {{ wins: Record<string, true>, lastWinDate: string|null }} a
- * @param {{ wins: Record<string, true>, lastWinDate: string|null }} b
+ * @param {{ wins: Record<string, true>, lastWinDate: string|null }} firstStreak
+ * @param {{ wins: Record<string, true>, lastWinDate: string|null }} secondStreak
  * @returns {{ wins: Record<string, true>, lastWinDate: string|null }}
  */
-function mergeStreaks(a, b) {
-  const wins = { ...(a?.wins ?? {}), ...(b?.wins ?? {}) };
-  const lastWinDate = laterDateKey(a?.lastWinDate, b?.lastWinDate);
+function mergeStreaks(firstStreak, secondStreak) {
+  const wins = { ...(firstStreak?.wins ?? {}), ...(secondStreak?.wins ?? {}) };
+  const lastWinDate = laterDateKey(
+    firstStreak?.lastWinDate,
+    secondStreak?.lastWinDate,
+  );
   return { wins, lastWinDate };
 }
 
-function laterDateKey(x, y) {
-  if (!x) return y ?? null;
-  if (!y) return x;
-  return x > y ? x : y;
+/** The later of two ISO date strings; either may be missing. */
+function laterDateKey(firstDate, secondDate) {
+  if (!firstDate) return secondDate ?? null;
+  if (!secondDate) return firstDate;
+  return firstDate > secondDate ? firstDate : secondDate;
+}
+
+/** Maps a stored streak row to the API shape; a missing row is an empty streak. */
+function mapStreakRow(streakRow) {
+  if (!streakRow) return { ...EMPTY_STREAK };
+  return {
+    wins: streakRow.wins ?? {},
+    lastWinDate: streakRow.last_win_date ?? null,
+  };
+}
+
+/** Coerces a request body into a streak, dropping anything malformed. */
+function sanitizeStreakInput(incoming) {
+  const wins =
+    incoming && typeof incoming.wins === 'object' && incoming.wins !== null
+      ? incoming.wins
+      : {};
+  const lastWinDate =
+    incoming && typeof incoming.lastWinDate === 'string'
+      ? incoming.lastWinDate
+      : null;
+  return { wins, lastWinDate };
 }
 
 /**
@@ -40,13 +66,10 @@ function createBoardGameStreakService({ withTransaction }) {
      * @returns {Promise<{ wins: Record<string, true>, lastWinDate: string|null }>}
      */
     async getStreakForUser(userId) {
-      const row = await withTransaction((client) =>
+      const streakRow = await withTransaction((client) =>
         repository.getStreak(client, userId),
       );
-      if (!row) {
-        return { ...EMPTY_STREAK };
-      }
-      return { wins: row.wins ?? {}, lastWinDate: row.last_win_date ?? null };
+      return mapStreakRow(streakRow);
     },
 
     /**
@@ -57,35 +80,22 @@ function createBoardGameStreakService({ withTransaction }) {
      */
     async putStreakForUser(userId, incoming) {
       return await withTransaction(async (client) => {
-        const existingRow = await repository.getStreak(client, userId);
-        const existing = existingRow
-          ? { wins: existingRow.wins ?? {}, lastWinDate: existingRow.last_win_date ?? null }
-          : EMPTY_STREAK;
-
-        const merged = mergeStreaks(existing, normalizeStreakInput(incoming));
-
-        const saved = await repository.upsertStreak(client, {
+        const existingStreak = mapStreakRow(
+          await repository.getStreak(client, userId),
+        );
+        const mergedStreak = mergeStreaks(
+          existingStreak,
+          sanitizeStreakInput(incoming),
+        );
+        const savedRow = await repository.upsertStreak(client, {
           userId,
-          wins: merged.wins,
-          lastWinDate: merged.lastWinDate,
+          wins: mergedStreak.wins,
+          lastWinDate: mergedStreak.lastWinDate,
         });
-
-        return { wins: saved.wins ?? {}, lastWinDate: saved.last_win_date ?? null };
+        return mapStreakRow(savedRow);
       });
     },
   };
-}
-
-function normalizeStreakInput(incoming) {
-  const wins =
-    incoming && typeof incoming.wins === 'object' && incoming.wins !== null
-      ? incoming.wins
-      : {};
-  const lastWinDate =
-    incoming && typeof incoming.lastWinDate === 'string'
-      ? incoming.lastWinDate
-      : null;
-  return { wins, lastWinDate };
 }
 
 module.exports = {

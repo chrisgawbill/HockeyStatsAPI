@@ -47,12 +47,12 @@ function mapRosterPlayer(rawPlayer) {
  * @returns {RosterContract}
  */
 function mapRoster(rawRoster) {
-  const all = [
+  const rawPlayers = [
     ...(rawRoster?.forwards ?? []),
     ...(rawRoster?.defensemen ?? []),
     ...(rawRoster?.goalies ?? []),
   ];
-  const players = all.map(mapRosterPlayer);
+  const players = rawPlayers.map(mapRosterPlayer);
 
   return { players };
 }

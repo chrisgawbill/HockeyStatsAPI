@@ -26,8 +26,8 @@ const cacheState = {
   },
 };
 
-function setCacheResponse(type, key, data) {
-  cacheState.responses.set(`${type}:${key}`, data);
+function setCacheResponse(type, key, payload) {
+  cacheState.responses.set(`${type}:${key}`, payload);
 }
 
 function resetCacheState() {
@@ -44,7 +44,7 @@ function installCacheManagerMock() {
     loaded: true,
     exports: {
       CACHE_TYPES,
-      GetOrFetch: (...args) => cacheState.getOrFetch(...args),
+      getOrFetchCached: (...args) => cacheState.getOrFetch(...args),
       readCache: async () => null,
       writeCache: async () => {},
       getCacheStorageMode: () => 'filesystem',
@@ -85,12 +85,12 @@ beforeEach(() => {
 });
 
 /**
- * Requests `path` with `data` cached under (type, key) and asserts that the
+ * Requests `path` with `payload` cached under (type, key) and asserts that the
  * route looked up exactly that key and answered 200. Returns the body.
  */
-async function getCached(router, mount, path, [type, key], data) {
+async function getCached(router, mount, path, [type, key], payload) {
   resetCacheState();
-  setCacheResponse(type, key, data);
+  setCacheResponse(type, key, payload);
   const response = await request(makeTestApp(mount, router), path);
   assert.equal(response.status, 200, path);
   assert.deepEqual(cacheState.calls, [{ type, key }], path);
@@ -203,8 +203,8 @@ test('standings uses the season cache key and maps standings', async () => {
 });
 
 test('player routes key caches by category or team, and season', async () => {
-  const get = (path, cacheKey, data) =>
-    getCached(playerRouter, '/player', path, cacheKey, data);
+  const get = (path, cacheKey, payload) =>
+    getCached(playerRouter, '/player', path, cacheKey, payload);
 
   const skaterLeaders = await get(
     '/player/skater/statLeaders/goals?season=20232024',
@@ -250,8 +250,8 @@ test('player routes key caches by category or team, and season', async () => {
 });
 
 test('team routes key caches by team and season', async () => {
-  const get = (path, cacheKey, data) =>
-    getCached(teamRouter, '/team', path, cacheKey, data);
+  const get = (path, cacheKey, payload) =>
+    getCached(teamRouter, '/team', path, cacheKey, payload);
 
   const roster = await get(
     '/team/roster/COL?season=20232024',

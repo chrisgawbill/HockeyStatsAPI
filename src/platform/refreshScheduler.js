@@ -3,30 +3,33 @@
  * itself is injected (the schedule slice owns it), so this module stays free of
  * domain dependencies and starts no timers on import.
  */
-// Schedule cache refreshes at 8AM, 7PM, 11PM UTC
 const REFRESH_HOURS_UTC = [8, 19, 23];
 
+/**
+ * Waits for the next refresh hour (8AM, 7PM or 11PM UTC), runs
+ * `refreshScheduleCache`, then schedules the following refresh.
+ */
 function scheduleNextRefresh(refreshScheduleCache) {
   const now = new Date();
-  let nextMs = null;
+  let nextRefreshMs = null;
   for (const hour of REFRESH_HOURS_UTC) {
     const candidate = new Date(now);
     candidate.setUTCHours(hour, 0, 0, 0);
     if (candidate.getTime() > now.getTime()) {
-      nextMs = candidate.getTime();
+      nextRefreshMs = candidate.getTime();
       break;
     }
   }
-  if (!nextMs) {
+  if (!nextRefreshMs) {
     const tomorrow = new Date(now);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
     tomorrow.setUTCHours(REFRESH_HOURS_UTC[0], 0, 0, 0);
-    nextMs = tomorrow.getTime();
+    nextRefreshMs = tomorrow.getTime();
   }
   setTimeout(async () => {
     await refreshScheduleCache();
     scheduleNextRefresh(refreshScheduleCache);
-  }, nextMs - now.getTime());
+  }, nextRefreshMs - now.getTime());
 }
 
 module.exports = {

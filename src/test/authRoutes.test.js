@@ -30,8 +30,8 @@ function buildProtectedApp() {
   app.get('/protected', requireAuth, (req, res) =>
     res.send({ userId: req.userId }),
   );
-  app.use((err, req, res, next) => {
-    res.status(err.status || 500).json({ error: err.message });
+  app.use((error, req, res, next) => {
+    res.status(error.status || 500).json({ error: error.message });
   });
   return app;
 }

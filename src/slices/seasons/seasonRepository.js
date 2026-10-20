@@ -1,9 +1,10 @@
 const { toJsonParam } = require('#platform/jsonParam.js');
 
+/** Inserts or updates a season row and returns it. */
 async function upsertSeason(client, season) {
   const startYear = Number(season.seasonId.slice(0, 4));
   const endYear = Number(season.seasonId.slice(4, 8));
-  const result = await client.query(
+  const { rows: upsertedSeasonRows } = await client.query(
     `
 		INSERT INTO seasons (
 			season_id,
@@ -41,15 +42,16 @@ async function upsertSeason(client, season) {
       toJsonParam(season.sourcePayload),
     ],
   );
-  return result.rows[0];
+  return upsertedSeasonRows[0];
 }
 
+/** Fetches a season row, or null. */
 async function getSeason(client, seasonId) {
-  const result = await client.query(
+  const { rows: seasonRows } = await client.query(
     'SELECT * FROM seasons WHERE season_id = $1',
     [seasonId],
   );
-  return result.rows[0] ?? null;
+  return seasonRows[0] ?? null;
 }
 
 module.exports = {

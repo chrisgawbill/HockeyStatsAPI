@@ -12,6 +12,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def call_claude(message):
+    """Send the prompt to the model and return the reply text."""
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY environment variable not set")
@@ -32,9 +33,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     try:
-        data = call_claude(sys.argv[1])
-        sys.stdout.write(json.dumps({"data": data}))
-    except Exception as e:
-        logger.error("Error calling Claude: %s", str(e))
-        sys.stdout.write(json.dumps({"error": str(e)}))
+        reply_text = call_claude(sys.argv[1])
+        sys.stdout.write(json.dumps({"data": reply_text}))
+    except Exception as error:
+        logger.error("Error calling Claude: %s", str(error))
+        sys.stdout.write(json.dumps({"error": str(error)}))
         sys.exit(1)

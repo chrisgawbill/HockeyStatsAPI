@@ -59,12 +59,12 @@ test('applies only pending migrations in filename order', async () => {
     'notes.txt': 'ignored',
   });
   const client = makeFakeClient({ applied: ['001_a.sql'] });
-  const result = await applyPendingMigrations(client, {
+  const appliedMigrations = await applyPendingMigrations(client, {
     migrationsDir: dir,
     log: quiet,
   });
 
-  assert.deepEqual(result, ['002_b.sql', '003_c.sql']);
+  assert.deepEqual(appliedMigrations, ['002_b.sql', '003_c.sql']);
   const sqls = statements(client);
   assert.ok(!sqls.includes('SQL_A'));
   assert.ok(sqls.indexOf('SQL_B') < sqls.indexOf('SQL_C'));
@@ -85,7 +85,7 @@ test('applies only pending migrations in filename order', async () => {
   const logs = [];
   const done = await applyPendingMigrations(
     makeFakeClient({ applied: ['001_a.sql', '002_b.sql', '003_c.sql'] }),
-    { migrationsDir: dir, log: (m) => logs.push(m) },
+    { migrationsDir: dir, log: (message) => logs.push(message) },
   );
   assert.deepEqual(done, []);
   assert.deepEqual(logs, ['No pending migrations.']);

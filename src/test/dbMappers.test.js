@@ -93,7 +93,7 @@ test('roster db mapper flattens roster buckets', () => {
   });
 
   assert.deepEqual(
-    players.map((p) => p.id),
+    players.map((player) => player.id),
     [1, 2, 3],
   );
 });

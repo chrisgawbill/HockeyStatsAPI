@@ -59,7 +59,7 @@ test('buildAfterActionReports reports completed games since favoriting, newest f
   });
 
   assert.deepEqual(
-    reports.map((r) => [r.gameId, r.read]),
+    reports.map((report) => [report.gameId, report.read]),
     [
       [3, false],
       [2, true],
@@ -80,7 +80,7 @@ test('buildAfterActionReports reports completed games since favoriting, newest f
   });
 
   assert.deepEqual(
-    late.map((r) => r.gameId),
+    late.map((report) => report.gameId),
     [1],
   );
 
@@ -121,7 +121,7 @@ test('a game between two favorites is one report; recent copies override season 
   );
 
   assert.equal(merged.length, 2);
-  assert.equal(merged.find((g) => g.gameId === 1).gameState, 'OFF');
+  assert.equal(merged.find((game) => game.gameId === 1).gameState, 'OFF');
 });
 
 
@@ -135,14 +135,14 @@ function fakeStore() {
       if (sql.includes('SELECT team_tri_code')) {
         return {
           rows: favorites
-            .filter((f) => f.user_id === params[0])
-            .map((f) => ({ ...f })),
+            .filter((favorite) => favorite.user_id === params[0])
+            .map((favorite) => ({ ...favorite })),
         };
       }
       if (sql.includes('INSERT INTO favorite_teams')) {
         if (
           !favorites.some(
-            (f) => f.user_id === params[0] && f.team_tri_code === params[1],
+            (favorite) => favorite.user_id === params[0] && favorite.team_tri_code === params[1],
           )
         ) {
           favorites.push({
@@ -155,7 +155,7 @@ function fakeStore() {
       }
       if (sql.includes('DELETE FROM favorite_teams')) {
         const index = favorites.findIndex(
-          (f) => f.user_id === params[0] && f.team_tri_code === params[1],
+          (favorite) => favorite.user_id === params[0] && favorite.team_tri_code === params[1],
         );
         if (index >= 0) favorites.splice(index, 1);
         return { rows: [] };
@@ -199,7 +199,7 @@ test('service favorites round-trip with tri-code validation, and reports track r
 
   const added = await service.addFavorite(7, 'tor');
   assert.deepEqual(
-    added.favorites.map((f) => f.triCode),
+    added.favorites.map((favorite) => favorite.triCode),
     ['TOR'],
   );
   await service.addFavorite(7, 'TOR');
@@ -212,7 +212,7 @@ test('service favorites round-trip with tri-code validation, and reports track r
 
   let inbox = await service.listReports(7);
   assert.deepEqual(
-    inbox.reports.map((r) => r.gameId),
+    inbox.reports.map((report) => report.gameId),
     [12, 11],
   );
   assert.equal(inbox.unreadCount, 2);
@@ -220,7 +220,7 @@ test('service favorites round-trip with tri-code validation, and reports track r
   await service.markRead(7, '12');
   inbox = await service.listReports(7);
   assert.equal(inbox.unreadCount, 1);
-  assert.equal(inbox.reports.find((r) => r.gameId === 12).read, true);
+  assert.equal(inbox.reports.find((report) => report.gameId === 12).read, true);
 
   const all = await service.markAllRead(7);
   assert.equal(all.unreadCount, 0);
@@ -256,7 +256,7 @@ test('service returns an empty inbox without favorites and survives a failed tea
   await service.addFavorite(7, 'TOR');
   const inbox = await service.listReports(7);
   assert.deepEqual(
-    inbox.reports.map((r) => r.gameId),
+    inbox.reports.map((report) => report.gameId),
     [21],
   );
 });

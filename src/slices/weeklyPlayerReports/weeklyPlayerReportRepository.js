@@ -1,5 +1,6 @@
+/** Lists one user's favorite players, oldest first. */
 async function listFavoritePlayers(client, userId) {
-  const result = await client.query(
+  const { rows: favoritePlayerRows } = await client.query(
     `
 		SELECT player_id, full_name, team_tri_code, position, headshot, created_at
 		FROM favorite_players
@@ -8,36 +9,36 @@ async function listFavoritePlayers(client, userId) {
 		`,
     [userId],
   );
-  return result.rows;
+  return favoritePlayerRows;
 }
 
 /** Every favorite of every user, for the weekly dispatch. */
 async function listAllFavoritePlayers(client) {
-  const result = await client.query(
+  const { rows: allFavoritePlayerRows } = await client.query(
     `
 		SELECT user_id, player_id, full_name, team_tri_code, position, headshot, created_at
 		FROM favorite_players
 		ORDER BY user_id, created_at, player_id
 		`,
   );
-  return result.rows;
+  return allFavoritePlayerRows;
 }
 
 /**
  * Adds a favorite unless the user already has `limit` others. Re-favoriting
  * keeps the original `created_at` and refreshes the display fields. Returns
- * false only when the cap blocked a new favorite.
+ * false only when the cap blocked a new favorite. A per-user advisory lock
+ * serializes adds so two tabs cannot both pass the cap check.
  */
 async function insertFavoritePlayer(
   client,
   { userId, playerId, fullName, teamTriCode, position, headshot, limit },
 ) {
-  // Serializes one user's adds so two tabs cannot both pass the cap check.
   await client.query(
     "SELECT pg_advisory_xact_lock(hashtext('favorite_players'), $1::int)",
     [userId],
   );
-  const result = await client.query(
+  const { rowCount: insertedCount } = await client.query(
     `
 		INSERT INTO favorite_players
 			(user_id, player_id, full_name, team_tri_code, position, headshot)
@@ -55,9 +56,10 @@ async function insertFavoritePlayer(
 		`,
     [userId, playerId, fullName, teamTriCode, position, headshot, limit],
   );
-  return result.rowCount > 0;
+  return insertedCount > 0;
 }
 
+/** Removes a favorite; a missing one is ignored. */
 async function deleteFavoritePlayer(client, { userId, playerId }) {
   await client.query(
     'DELETE FROM favorite_players WHERE user_id = $1 AND player_id = $2',
@@ -65,8 +67,9 @@ async function deleteFavoritePlayer(client, { userId, playerId }) {
   );
 }
 
+/** Lists a user's most recent reports, newest week first. */
 async function listReports(client, { userId, limit }) {
-  const result = await client.query(
+  const { rows: reportRows } = await client.query(
     `
 		SELECT to_char(week_start, 'YYYY-MM-DD') AS week_start, payload, created_at, read_at
 		FROM weekly_player_reports
@@ -76,11 +79,12 @@ async function listReports(client, { userId, limit }) {
 		`,
     [userId, limit],
   );
-  return result.rows;
+  return reportRows;
 }
 
+/** Fetches one user's report for a week, or null. */
 async function getReport(client, { userId, weekStart }) {
-  const result = await client.query(
+  const { rows: reportRows } = await client.query(
     `
 		SELECT to_char(week_start, 'YYYY-MM-DD') AS week_start, payload, created_at, read_at
 		FROM weekly_player_reports
@@ -88,7 +92,7 @@ async function getReport(client, { userId, weekStart }) {
 		`,
     [userId, weekStart],
   );
-  return result.rows[0] ?? null;
+  return reportRows[0] ?? null;
 }
 
 /**
@@ -96,7 +100,7 @@ async function getReport(client, { userId, weekStart }) {
  * Returns 1 when a row was created, else 0.
  */
 async function insertReport(client, { userId, weekStart, payload }) {
-  const result = await client.query(
+  const { rowCount: insertedCount } = await client.query(
     `
 		INSERT INTO weekly_player_reports (user_id, week_start, payload)
 		VALUES ($1, $2::date, $3::jsonb)
@@ -104,12 +108,12 @@ async function insertReport(client, { userId, weekStart, payload }) {
 		`,
     [userId, weekStart, JSON.stringify(payload)],
   );
-  return result.rowCount;
+  return insertedCount;
 }
 
 /** Returns how many rows were marked (0 when no such report). */
 async function markReportRead(client, { userId, weekStart }) {
-  const result = await client.query(
+  const { rowCount: updatedCount } = await client.query(
     `
 		UPDATE weekly_player_reports
 		SET read_at = COALESCE(read_at, now())
@@ -117,12 +121,12 @@ async function markReportRead(client, { userId, weekStart }) {
 		`,
     [userId, weekStart],
   );
-  return result.rowCount;
+  return updatedCount;
 }
 
 /** All of the week's reports, for the push half of the dispatch. */
 async function listReportsForWeek(client, weekStart) {
-  const result = await client.query(
+  const { rows: weekReportRows } = await client.query(
     `
 		SELECT user_id, payload, read_at
 		FROM weekly_player_reports
@@ -131,7 +135,7 @@ async function listReportsForWeek(client, weekStart) {
 		`,
     [weekStart],
   );
-  return result.rows;
+  return weekReportRows;
 }
 
 module.exports = {

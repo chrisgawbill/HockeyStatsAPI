@@ -13,6 +13,7 @@ const defaultMigrationsDir = path.join(__dirname, 'migrations');
 // runs, so instances starting together cannot apply the same migration twice.
 const MIGRATION_LOCK_ID = '727274001';
 
+/** Creates the schema_migrations bookkeeping table if it does not exist yet. */
 async function ensureMigrationsTable(client) {
   await client.query(`
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -22,18 +23,23 @@ async function ensureMigrationsTable(client) {
 	`);
 }
 
+/** Returns the set of migration filenames already recorded as applied. */
 async function getAppliedMigrations(client) {
-  const result = await client.query('SELECT filename FROM schema_migrations');
-  return new Set(result.rows.map((row) => row.filename));
+  const { rows: appliedRows } = await client.query(
+    'SELECT filename FROM schema_migrations',
+  );
+  return new Set(appliedRows.map((appliedRow) => appliedRow.filename));
 }
 
+/** Lists the .sql migration filenames in a directory, in application order. */
 function getMigrationFiles(migrationsDir) {
   return fs
     .readdirSync(migrationsDir)
-    .filter((file) => file.endsWith('.sql'))
+    .filter((filename) => filename.endsWith('.sql'))
     .sort();
 }
 
+/** Runs one migration file and records it, all in a single transaction. */
 async function runMigration(client, migrationsDir, filename, log) {
   const sql = fs.readFileSync(path.join(migrationsDir, filename), 'utf-8');
   await client.query('BEGIN');
@@ -50,9 +56,14 @@ async function runMigration(client, migrationsDir, filename, log) {
   }
 }
 
-// Applies pending migrations on an already-connected client while holding the
-// advisory lock. Waiting for the lock also means a second instance sees the
-// first one's migrations as applied once it gets in.
+/**
+ * Applies pending migrations on an already-connected client while holding the
+ * advisory lock. Waiting for the lock also means a second instance sees the
+ * first one's migrations as applied once it gets in. Unlock failures (e.g. a
+ * dropped connection) are ignored so they do not mask a migration error;
+ * closing the session releases the lock anyway.
+ * @returns {Promise<string[]>} filenames of the migrations applied
+ */
 async function applyPendingMigrations(
   client,
   { migrationsDir = defaultMigrationsDir, log = console.log } = {},
@@ -60,31 +71,30 @@ async function applyPendingMigrations(
   await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_ID]);
   try {
     await ensureMigrationsTable(client);
-    const applied = await getAppliedMigrations(client);
-    const pending = getMigrationFiles(migrationsDir).filter(
-      (file) => !applied.has(file),
+    const appliedFilenames = await getAppliedMigrations(client);
+    const pendingFilenames = getMigrationFiles(migrationsDir).filter(
+      (filename) => !appliedFilenames.has(filename),
     );
 
-    if (pending.length === 0) {
+    if (pendingFilenames.length === 0) {
       log('No pending migrations.');
       return [];
     }
 
-    for (const filename of pending) {
+    for (const filename of pendingFilenames) {
       await runMigration(client, migrationsDir, filename, log);
     }
-    log(`Applied ${pending.length} migration(s).`);
-    return pending;
+    log(`Applied ${pendingFilenames.length} migration(s).`);
+    return pendingFilenames;
   } finally {
     try {
       await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_ID]);
     } catch {
-      // Ignore unlock failures (e.g. dropped connection) so they do not mask
-      // the migration error; closing the session releases the lock anyway.
     }
   }
 }
 
+/** Connects to the database and applies all pending migrations, then disconnects. */
 async function runMigrations({
   connectionString,
   ssl,
@@ -106,12 +116,15 @@ async function runMigrations({
   }
 }
 
-// With --if-configured (used by `pnpm start`), a missing CACHE_DATABASE_URL
-// means filesystem-cache mode, so there is nothing to migrate.
+/**
+ * With --if-configured (used by `pnpm start`), a missing CACHE_DATABASE_URL
+ * means filesystem-cache mode, so there is nothing to migrate.
+ */
 function shouldSkip(argv, env) {
   return argv.includes('--if-configured') && !env.CACHE_DATABASE_URL;
 }
 
+/** CLI entry point: runs migrations unless they are skipped for this environment. */
 async function main(argv = process.argv.slice(2), env = process.env) {
   if (shouldSkip(argv, env)) {
     console.log('Skipping migrations: CACHE_DATABASE_URL is not set.');

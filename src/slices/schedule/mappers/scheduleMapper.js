@@ -53,11 +53,11 @@
  * @returns {GameBroadcastContract[]}
  */
 function mapBroadcasts(rawBroadcasts = []) {
-  return rawBroadcasts.filter(Boolean).map((b) => {
-    const id = b.id ?? null;
-    const network = b.network ?? '';
-    const market = b.market ?? '';
-    const countryCode = b.countryCode ?? '';
+  return rawBroadcasts.filter(Boolean).map((rawBroadcast) => {
+    const id = rawBroadcast.id ?? null;
+    const network = rawBroadcast.network ?? '';
+    const market = rawBroadcast.market ?? '';
+    const countryCode = rawBroadcast.countryCode ?? '';
 
     return { id, network, market, countryCode };
   });
@@ -73,8 +73,19 @@ function derivePlayoffRound(rawGame) {
   if (rawGame.seriesStatus?.round != null) {
     return rawGame.seriesStatus.round;
   }
-  const idStr = String(rawGame.id ?? '');
-  return idStr.length === 10 ? parseInt(idStr.slice(6, 8)) || null : null;
+  const gameIdText = String(rawGame.id ?? '');
+  return gameIdText.length === 10
+    ? parseInt(gameIdText.slice(6, 8)) || null
+    : null;
+}
+
+/** The playoff series score as "top-bottom" wins (e.g. "3-2"), or null when unknown. */
+function formatSeriesWins(seriesStatus) {
+  const topSeedWins = seriesStatus?.topSeedWins;
+  const bottomSeedWins = seriesStatus?.bottomSeedWins;
+  return topSeedWins != null && bottomSeedWins != null
+    ? `${topSeedWins}-${bottomSeedWins}`
+    : null;
 }
 
 /**
@@ -112,12 +123,7 @@ function mapGame(rawGame, ctx) {
   const bottomSeedTeamAbbrev = isPlayoff
     ? (series?.bottomSeedTeamAbbrev ?? null)
     : null;
-  const seriesWins = (() => {
-    if (!isPlayoff) return null;
-    const top = series?.topSeedWins;
-    const bot = series?.bottomSeedWins;
-    return top != null && bot != null ? `${top}-${bot}` : null;
-  })();
+  const seriesWins = isPlayoff ? formatSeriesWins(series) : null;
 
   return /** @type {ScheduleGameContract} */ ({
     gameId,

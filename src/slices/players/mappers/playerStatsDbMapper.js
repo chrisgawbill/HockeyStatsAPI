@@ -1,6 +1,7 @@
 const { firstValue, toInteger, toNumber } = require('#platform/fieldValue.js');
 const { buildPlayer } = require('#platform/entityBuilders.js');
 
+/** Builds the player entity for a stats row, reading the id and name fields skaters and goalies use. */
 function buildStatsPlayer(rawStats, playerType) {
   return buildPlayer(rawStats, {
     playerId:
@@ -15,6 +16,7 @@ function buildStatsPlayer(rawStats, playerType) {
   });
 }
 
+/** Builds a player_season_stats entity from one raw stats row. */
 function buildPlayerStats({
   seasonId,
   playerType,
@@ -50,6 +52,10 @@ function buildPlayerStats({
   };
 }
 
+/**
+ * Maps a stats payload into `{ rows: [{ player, stats }], skipped }`, where
+ * `skipped` counts rows without a usable player id.
+ */
 function mapPlayerStatsPayload({
   seasonId,
   playerType,

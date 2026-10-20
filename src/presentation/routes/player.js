@@ -23,8 +23,8 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
           req.seasonId,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -36,8 +36,8 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
           req.seasonId,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -49,8 +49,8 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
           req.seasonId,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -59,8 +59,8 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
       res.send(
         await playerStatsService.getSkaterCorsi(req.query.teamId, req.seasonId),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -72,8 +72,8 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
           req.seasonId,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

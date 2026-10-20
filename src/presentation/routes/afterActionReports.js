@@ -17,8 +17,8 @@ function createFavoritesRouter({ afterActionReportService }) {
       res.send({
         favorites: await afterActionReportService.listFavorites(req.userId),
       });
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -30,8 +30,8 @@ function createFavoritesRouter({ afterActionReportService }) {
           req.params.triCode,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -44,8 +44,8 @@ function createFavoritesRouter({ afterActionReportService }) {
           (req.body || {}).muted,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -57,8 +57,8 @@ function createFavoritesRouter({ afterActionReportService }) {
           req.params.triCode,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -78,16 +78,16 @@ function createAfterActionReportsRouter({ afterActionReportService }) {
   router.get('/', async (req, res, next) => {
     try {
       res.send(await afterActionReportService.listReports(req.userId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.post('/read-all', async (req, res, next) => {
     try {
       res.send(await afterActionReportService.markAllRead(req.userId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -95,8 +95,8 @@ function createAfterActionReportsRouter({ afterActionReportService }) {
     try {
       await afterActionReportService.markRead(req.userId, req.params.gameId);
       res.status(204).end();
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

@@ -192,8 +192,9 @@ async function upsertTeamSeasonSnapshots(client, snapshots) {
   );
 }
 
+/** Lists the stored team snapshots for a season. */
 async function getTeamSeasonSnapshots(client, seasonId) {
-  const result = await client.query(
+  const { rows: snapshotRows } = await client.query(
     `
 		SELECT
 			to_jsonb(s) AS snapshot,
@@ -205,7 +206,7 @@ async function getTeamSeasonSnapshots(client, seasonId) {
 		`,
     [seasonId],
   );
-  return result.rows;
+  return snapshotRows;
 }
 
 module.exports = {

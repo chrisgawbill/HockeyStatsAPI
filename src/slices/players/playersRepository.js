@@ -68,12 +68,13 @@ async function upsertPlayers(client, players) {
   );
 }
 
+/** Fetches a player row by id, or null. */
 async function getPlayer(client, playerId) {
-  const result = await client.query(
+  const { rows: playerRows } = await client.query(
     'SELECT * FROM players WHERE player_id = $1',
     [playerId],
   );
-  return result.rows[0] ?? null;
+  return playerRows[0] ?? null;
 }
 
 module.exports = {

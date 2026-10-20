@@ -15,24 +15,24 @@ function createScheduleRouter({ scheduleService }) {
   router.get('/', validateSeason, async (req, res, next) => {
     try {
       res.send(await scheduleService.getSeasonSchedule(req.seasonId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/landing/:gameID', async (req, res, next) => {
     try {
       res.send(await scheduleService.getGameLanding(req.params.gameID));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/:gameID', async (req, res, next) => {
     try {
       res.send(await scheduleService.getGameBoxscore(req.params.gameID));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

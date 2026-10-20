@@ -8,16 +8,16 @@ const { verifySessionToken } = require('#platform/sessionJwt.js');
  * a static passphrase.
  */
 function requireAuth(req, res, next) {
-  const header = req.get('authorization') || '';
-  const [scheme, token] = header.split(' ');
+  const authorizationHeader = req.get('authorization') || '';
+  const [scheme, token] = authorizationHeader.split(' ');
 
   if (scheme !== 'Bearer' || !token) {
     return next(createError(401, 'Unauthorized'));
   }
 
   try {
-    const decoded = verifySessionToken(token);
-    req.userId = decoded.userId;
+    const { userId } = verifySessionToken(token);
+    req.userId = userId;
     next();
   } catch {
     next(createError(401, 'Unauthorized'));
