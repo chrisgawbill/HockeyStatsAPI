@@ -1,0 +1,24 @@
+# systemd unit for running the API on a self-hosted Ubuntu box.
+# Install: see "Self-hosting (Ubuntu + Tailscale Funnel)" in README.md.
+# Replace YOUR_USER and /home/YOUR_USER/HockeyStatsAPI before copying it to
+# /etc/systemd/system/hockeystatsapi.service.
+[Unit]
+Description=HockeyStatsAPI
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/HockeyStatsAPI
+# Secrets and PORT come from .env in WorkingDirectory (loaded by dotenv).
+Environment=NODE_ENV=production
+# Production runs plain `python3`; putting the repo venv first on PATH makes
+# that resolve to the venv that has the `anthropic` package installed.
+Environment=PATH=/home/YOUR_USER/HockeyStatsAPI/venv/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env pnpm start
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

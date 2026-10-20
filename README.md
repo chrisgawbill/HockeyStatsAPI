@@ -92,3 +92,34 @@ Recommended Render Web Service commands:
 - Start: `pnpm start` (applies pending database migrations, then starts the server; no pre-deploy command is needed)
 
 Configure secrets and runtime values in Render's environment settings. Do not commit `.env` or credentials.
+
+### Self-hosting (Ubuntu + Tailscale Funnel)
+
+The API can also run on a home Ubuntu machine, exposed over public HTTPS with Tailscale Funnel (no port forwarding, static IP, or domain needed). The frontend on GitHub Pages is served over HTTPS, so the API must be too.
+
+1. Install Node 20+ and pnpm (`corepack enable`), plus `python3-venv` (`sudo apt install python3-venv`).
+2. Clone and install. Ubuntu blocks system-wide `pip install`, so the AI dependency goes in a venv inside the repo:
+
+   ```bash
+   git clone https://github.com/chrisgawbill/HockeyStatsAPI.git ~/HockeyStatsAPI
+   cd ~/HockeyStatsAPI
+   pnpm install --frozen-lockfile
+   python3 -m venv venv && venv/bin/pip install -r requirements.txt
+   cp .env.example .env   # copy the values from Render's environment settings
+   ```
+
+   Keep `DATABASE_CA_CERT` set: `NODE_ENV=production` turns database SSL on.
+3. Run it as a service: edit `YOUR_USER` in `deploy/hockeystatsapi.service`, then:
+
+   ```bash
+   sudo cp deploy/hockeystatsapi.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now hockeystatsapi
+   journalctl -u hockeystatsapi -f   # logs
+   curl http://localhost:9000/api/push/config   # smoke test
+   ```
+
+4. Expose it: `sudo tailscale funnel --bg 9000`. The first run links to the admin console if HTTPS certificates or the Funnel policy attribute still need enabling. The API is then public at `https://<machine>.<tailnet>.ts.net`; `--bg` keeps it across reboots (`tailscale funnel status` to check, `tailscale funnel --https=443 off` to stop).
+5. Point the clients at it: set the frontend repository variable `VITE_API_URL` and this repository's `AAR_PUSH_API_URL` secret to the `ts.net` URL, then re-run the frontend's Pages deploy. CORS already allows `https://chrisgawbill.github.io`.
+
+To update: `git pull && pnpm install --frozen-lockfile && venv/bin/pip install -r requirements.txt && sudo systemctl restart hockeystatsapi` (migrations run on start).
