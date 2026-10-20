@@ -10,7 +10,7 @@ const CACHE_TYPES = { STAT_LEADERS: 'stat-leaders' };
 /** Cache stub that always calls through to the fetcher (no persistence). */
 const passthroughCache = {
   CACHE_TYPES,
-  GetOrFetch: (type, key, fetcher) => fetcher(),
+  getOrFetchCached: (type, key, fetcher) => fetcher(),
 };
 
 /** Never actually schedules background persistence in these tests. */
@@ -69,9 +69,9 @@ test('getSkaterLeaders maps a normal successful payload', async () => {
     },
   }));
 
-  const result = await service.getSkaterLeaders('goals', '20252026');
+  const leaders = await service.getSkaterLeaders('goals', '20252026');
 
-  assert.equal(result.length, 1);
-  assert.equal(result[0].firstName, 'Connor');
-  assert.equal(result[0].value, 12);
+  assert.equal(leaders.length, 1);
+  assert.equal(leaders[0].firstName, 'Connor');
+  assert.equal(leaders[0].value, 12);
 });

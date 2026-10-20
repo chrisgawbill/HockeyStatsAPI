@@ -116,8 +116,9 @@ async function upsertPlayerSeasonStats(client, statsRows) {
   );
 }
 
+/** Lists a season's player stats rows for a team scope. */
 async function getPlayerSeasonStats(client, seasonId, teamScope = 'all') {
-  const result = await client.query(
+  const { rows: seasonStatsRows } = await client.query(
     `
 		SELECT
 			to_jsonb(player_season_stats) AS stats,
@@ -130,7 +131,7 @@ async function getPlayerSeasonStats(client, seasonId, teamScope = 'all') {
 		`,
     [seasonId, teamScope],
   );
-  return result.rows;
+  return seasonStatsRows;
 }
 
 module.exports = {

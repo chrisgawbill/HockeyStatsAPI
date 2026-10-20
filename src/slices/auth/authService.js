@@ -31,8 +31,8 @@ function createAuthService({ withTransaction, googleAuth, sessionJwt }) {
       let payload;
       try {
         payload = await googleAuth.verifyGoogleIdToken(credential);
-      } catch (err) {
-        throw createError(401, `Invalid Google credential: ${err.message}`);
+      } catch (error) {
+        throw createError(401, `Invalid Google credential: ${error.message}`);
       }
 
       if (!payload || !payload.sub) {
@@ -74,8 +74,8 @@ function requireValidUserId(sessionJwt, token) {
     throw createError(401, 'Unauthorized');
   }
   try {
-    const decoded = sessionJwt.verifySessionToken(token);
-    return decoded.userId;
+    const { userId } = sessionJwt.verifySessionToken(token);
+    return userId;
   } catch {
     throw createError(401, 'Unauthorized');
   }

@@ -13,8 +13,8 @@ function createBoardGameRouter({ boardGameStreakService }) {
   router.get('/streak', async (req, res, next) => {
     try {
       res.send(await boardGameStreakService.getStreakForUser(req.userId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -23,8 +23,8 @@ function createBoardGameRouter({ boardGameStreakService }) {
       res.send(
         await boardGameStreakService.putStreakForUser(req.userId, req.body),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

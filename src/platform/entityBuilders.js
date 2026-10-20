@@ -1,20 +1,23 @@
 const { firstValue, toInteger } = require('#platform/fieldValue.js');
 
+/** Splits a full name into first name and the remainder as last name; missing parts are null. */
 function splitFullName(fullName) {
   if (!fullName) return { firstName: null, lastName: null };
-  const parts = String(fullName).trim().split(/\s+/);
-  if (parts.length === 0) return { firstName: null, lastName: null };
-  if (parts.length === 1) return { firstName: parts[0], lastName: null };
+  const nameParts = String(fullName).trim().split(/\s+/);
+  if (nameParts.length === 0) return { firstName: null, lastName: null };
+  if (nameParts.length === 1) return { firstName: nameParts[0], lastName: null };
   return {
-    firstName: parts[0],
-    lastName: parts.slice(1).join(' '),
+    firstName: nameParts[0],
+    lastName: nameParts.slice(1).join(' '),
   };
 }
 
+/** Joins first and last name, or returns null when both are missing. */
 function nameFromParts(firstName, lastName) {
   return [firstName, lastName].filter(Boolean).join(' ') || null;
 }
 
+/** Builds the season entity persisted for a season id. */
 function buildSeason(seasonId, sourcePayload = {}) {
   return {
     seasonId,
@@ -22,6 +25,10 @@ function buildSeason(seasonId, sourcePayload = {}) {
   };
 }
 
+/**
+ * Builds a team entity from an NHL API team payload, preferring `fallback`
+ * values and trying each field name the NHL endpoints use. Null without a team id.
+ */
 function buildTeam(rawTeam = {}, fallback = {}) {
   const teamId = toInteger(
     firstValue(
@@ -84,6 +91,10 @@ function buildTeam(rawTeam = {}, fallback = {}) {
   };
 }
 
+/**
+ * Builds a player entity from an NHL API player payload, preferring `fallback`
+ * values and deriving missing first/last names from the full name. Null without a player id.
+ */
 function buildPlayer(rawPlayer = {}, fallback = {}) {
   const playerId = toInteger(
     firstValue(
@@ -107,12 +118,12 @@ function buildPlayer(rawPlayer = {}, fallback = {}) {
       rawPlayer.name,
       nameFromParts(firstName, lastName),
     ) ?? null;
-  const split = splitFullName(fullName);
+  const splitName = splitFullName(fullName);
 
   return {
     playerId,
-    firstName: firstName ?? split.firstName,
-    lastName: lastName ?? split.lastName,
+    firstName: firstName ?? splitName.firstName,
+    lastName: lastName ?? splitName.lastName,
     fullName,
     headshotUrl: firstValue(
       fallback.headshotUrl,

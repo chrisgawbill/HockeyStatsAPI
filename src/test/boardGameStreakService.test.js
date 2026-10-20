@@ -19,9 +19,11 @@ test('mergeStreaks unions wins without duplicates and keeps the later lastWinDat
     '2026-01-03': true,
   });
 
-  const last = (a, b) =>
-    mergeStreaks({ wins: {}, lastWinDate: a }, { wins: {}, lastWinDate: b })
-      .lastWinDate;
+  const last = (firstDate, secondDate) =>
+    mergeStreaks(
+      { wins: {}, lastWinDate: firstDate },
+      { wins: {}, lastWinDate: secondDate },
+    ).lastWinDate;
   assert.equal(last('2026-01-05', '2026-01-09'), '2026-01-09');
   assert.equal(last('2026-02-01', '2026-01-09'), '2026-02-01');
   assert.equal(last(null, '2026-01-09'), '2026-01-09');
@@ -35,7 +37,7 @@ test('mergeStreaks unions wins without duplicates and keeps the later lastWinDat
 // before the service (which requires it internally) is loaded.
 
 function installFakeStreakRepository() {
-  const rows = new Map(); // userId -> { user_id, wins, last_win_date }
+  const streakRowsByUser = new Map();
 
   const repoPath = require.resolve(
     '#slices/boardGameStreak/boardGameStreakRepository.js',
@@ -47,20 +49,20 @@ function installFakeStreakRepository() {
     loaded: true,
     exports: {
       async getStreak(client, userId) {
-        return rows.get(userId) ?? null;
+        return streakRowsByUser.get(userId) ?? null;
       },
       async upsertStreak(client, { userId, wins, lastWinDate }) {
-        const row = { user_id: userId, wins, last_win_date: lastWinDate };
-        rows.set(userId, row);
-        return row;
+        const streakRow = { user_id: userId, wins, last_win_date: lastWinDate };
+        streakRowsByUser.set(userId, streakRow);
+        return streakRow;
       },
     },
   };
 
-  return rows;
+  return streakRowsByUser;
 }
 
-const rows = installFakeStreakRepository();
+const streakRowsByUser = installFakeStreakRepository();
 
 const servicePath = require.resolve(
   '#slices/boardGameStreak/boardGameStreakService.js',

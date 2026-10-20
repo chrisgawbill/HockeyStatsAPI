@@ -56,11 +56,12 @@ async function upsertStatLeaders(client, leaders) {
   );
 }
 
+/** Lists a category's leaders joined with their player rows, best rank first. */
 async function getStatLeaders(
   client,
   { seasonId, playerType, category, teamScope = 'all' },
 ) {
-  const result = await client.query(
+  const { rows: leaderRows } = await client.query(
     `
 		SELECT
 			to_jsonb(stat_leaders) AS leader,
@@ -75,7 +76,7 @@ async function getStatLeaders(
 		`,
     [seasonId, playerType, category, teamScope],
   );
-  return result.rows;
+  return leaderRows;
 }
 
 module.exports = {

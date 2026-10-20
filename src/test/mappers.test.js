@@ -29,7 +29,7 @@ test('mapGame fills guarded defaults, including broadcasts', () => {
     { id: null, network: '', market: '', countryCode: '' },
   ]);
 
-  const result = mapGame(
+  const mappedGame = mapGame(
     {
       id: 2023020001,
       gameState: 'FUT',
@@ -44,7 +44,7 @@ test('mapGame fills guarded defaults, including broadcasts', () => {
     { date: '2024-01-01', dayAbbrev: 'Mon' },
   );
 
-  assert.deepEqual(result, {
+  assert.deepEqual(mappedGame, {
     gameId: 2023020001,
     date: '2024-01-01',
     gameTime: '2024-01-01T19:00:00Z',
@@ -137,7 +137,7 @@ test('resolveTeamId and mapStandingsTeam handle NHL field variants', () => {
   assert.equal(resolveTeamId({ id: 12 }), 12);
   assert.equal(resolveTeamId({ team: { id: 13 } }), 13);
 
-  const result = mapStandingsTeam({
+  const mappedTeam = mapStandingsTeam({
     teamAbbrev: { default: 'COL' },
     teamLogo: 'logo.svg',
     teamCommonName: { default: 'Avalanche' },
@@ -156,9 +156,9 @@ test('resolveTeamId and mapStandingsTeam handle NHL field variants', () => {
     leagueL10Sequence: 2,
   });
 
-  assert.equal(result.teamId, 'COL');
-  assert.equal(result.name, 'Avalanche');
-  assert.equal(result.clinchingIndicator, 'p');
+  assert.equal(mappedTeam.teamId, 'COL');
+  assert.equal(mappedTeam.name, 'Avalanche');
+  assert.equal(mappedTeam.clinchingIndicator, 'p');
 
   // The renamed clinchIndicator spelling is accepted too.
   const renamed = mapStandingsTeam({
@@ -199,14 +199,14 @@ test('roster mappers guard names and flatten every position bucket', () => {
     headshot: '',
   });
 
-  const result = mapRoster({
+  const rosterContract = mapRoster({
     forwards: [{ id: 1, firstName: { default: 'Forward' } }],
     defensemen: [{ id: 2, firstName: { default: 'Defense' } }],
     goalies: [{ id: 3, firstName: { default: 'Goalie' } }],
   });
 
   assert.deepEqual(
-    result.players.map((player) => player.id),
+    rosterContract.players.map((player) => player.id),
     [1, 2, 3],
   );
 });
@@ -263,7 +263,7 @@ test('skater and goalie summaries map defaults and id/percentage variants', () =
 });
 
 test('mapStatLeaders guards missing fields and missing categories', () => {
-  const result = mapStatLeaders(
+  const leaderContracts = mapStatLeaders(
     {
       goals: [
         {
@@ -280,7 +280,7 @@ test('mapStatLeaders guards missing fields and missing categories', () => {
     'goals',
   );
 
-  assert.deepEqual(result, [
+  assert.deepEqual(leaderContracts, [
     {
       id: 29,
       firstName: '',

@@ -11,19 +11,19 @@ function createAiRouter({ aiSummaryService }) {
 
   router.post('/', aiRateLimiter, async (req, res, next) => {
     try {
-      const key = req.body.cacheKey ?? 'default';
-      if (key !== 'default' && !/^[A-Z]{3}$/.test(key)) {
+      const cacheKey = req.body.cacheKey ?? 'default';
+      if (cacheKey !== 'default' && !/^[A-Z]{3}$/.test(cacheKey)) {
         return res.status(400).json({ error: 'Invalid cacheKey format.' });
       }
 
       const summary = await aiSummaryService.getTeamHistorySummary({
-        cacheKey: key,
+        cacheKey,
         message: req.body.content,
         triCode: req.body.triCode,
       });
       res.send(summary);
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

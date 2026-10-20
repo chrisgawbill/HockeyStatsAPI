@@ -6,8 +6,8 @@ function makeTestApp(path, router) {
   const app = express();
   app.use(express.json());
   app.use(path, router);
-  app.use((err, req, res, next) => {
-    res.status(err.status || 500).json({ error: err.message });
+  app.use((error, req, res, next) => {
+    res.status(error.status || 500).json({ error: error.message });
   });
   return app;
 }
@@ -33,27 +33,27 @@ async function request(app, path, options = {}) {
   );
 
   return await new Promise((resolve, reject) => {
-    const res = new http.ServerResponse(req);
+    const response = new http.ServerResponse(req);
     const chunks = [];
 
-    res.write = (chunk) => {
+    response.write = (chunk) => {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       return true;
     };
 
-    res.end = (chunk) => {
+    response.end = (chunk) => {
       if (chunk) {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
       const text = Buffer.concat(chunks).toString('utf8');
       resolve({
-        status: res.statusCode,
+        status: response.statusCode,
         body: text ? JSON.parse(text) : null,
-        headers: res.getHeaders(),
+        headers: response.getHeaders(),
       });
     };
 
-    app.handle(req, res, reject);
+    app.handle(req, response, reject);
   });
 }
 

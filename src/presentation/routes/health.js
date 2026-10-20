@@ -28,16 +28,16 @@ function createHealthRouter({ cache }) {
         uptime: process.uptime(),
         currentTime: new Date().toISOString(),
       });
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/cache-usage', async (req, res, next) => {
     try {
       res.json(await cache.getCacheUsage());
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

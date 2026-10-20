@@ -44,28 +44,28 @@ test('getCurrentSeasonId rolls over to the new season on September 1', () => {
 test('validateSeason sets req.seasonId (explicit or current) or responds 400', () => {
   const run = (query) => {
     const req = { query };
-    const res = makeResponse();
+    const response = makeResponse();
     let nextCalled = false;
-    validateSeason(req, res, () => {
+    validateSeason(req, response, () => {
       nextCalled = true;
     });
-    return { req, res, nextCalled };
+    return { req, response, nextCalled };
   };
 
   for (const [query, expected] of [
     [{ season: '20232024' }, '20232024'],
     [{}, getCurrentSeasonId()],
   ]) {
-    const { req, res, nextCalled } = run(query);
+    const { req, response, nextCalled } = run(query);
     assert.equal(nextCalled, true);
     assert.equal(req.seasonId, expected);
-    assert.equal(res.statusCode, 200);
-    assert.equal(res.body, null);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body, null);
   }
 
   const bad = run({ season: 'bad' });
   assert.equal(bad.nextCalled, false);
   assert.equal(bad.req.seasonId, undefined);
-  assert.equal(bad.res.statusCode, 400);
-  assert.deepEqual(bad.res.body, { error: INVALID_SEASON_MSG });
+  assert.equal(bad.response.statusCode, 400);
+  assert.deepEqual(bad.response.body, { error: INVALID_SEASON_MSG });
 });

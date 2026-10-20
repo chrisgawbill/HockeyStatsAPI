@@ -1,11 +1,13 @@
 const { firstValue, toNumber } = require('#platform/fieldValue.js');
 const { buildPlayer } = require('#platform/entityBuilders.js');
 
+/** Returns the raw leader entries for one category, or [] when absent. */
 function getLeaderRows(leadersPayload, category) {
-  const rows = leadersPayload?.[category];
-  return Array.isArray(rows) ? rows : [];
+  const rawLeaders = leadersPayload?.[category];
+  return Array.isArray(rawLeaders) ? rawLeaders : [];
 }
 
+/** Builds the player entity for a leader entry; null when it has no usable id. */
 function buildLeaderPlayer(rawLeader) {
   return buildPlayer(rawLeader, {
     playerId: rawLeader.id,
@@ -19,6 +21,10 @@ function buildLeaderPlayer(rawLeader) {
   });
 }
 
+/**
+ * Maps a leaders payload into `{ rows: [{ player, leader }], skipped }`, where
+ * `skipped` counts entries without a usable player id.
+ */
 function mapStatLeaderPayload({
   seasonId,
   playerType,

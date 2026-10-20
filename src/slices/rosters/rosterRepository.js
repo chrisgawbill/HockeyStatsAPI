@@ -68,8 +68,9 @@ async function upsertRosterEntries(client, entries) {
   );
 }
 
+/** Lists a team's roster entries for a season. */
 async function getRosterEntries(client, seasonId, triCode) {
-  const result = await client.query(
+  const { rows: rosterEntryRows } = await client.query(
     `
 		SELECT
 			to_jsonb(roster_entries) AS roster_entry,
@@ -82,7 +83,7 @@ async function getRosterEntries(client, seasonId, triCode) {
 		`,
     [seasonId, triCode],
   );
-  return result.rows;
+  return rosterEntryRows;
 }
 
 module.exports = {

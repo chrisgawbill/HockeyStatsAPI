@@ -1,6 +1,7 @@
 const { firstValue, toInteger } = require('#platform/fieldValue.js');
 const { buildPlayer } = require('#platform/entityBuilders.js');
 
+/** All raw players from the roster's forwards, defensemen and goalies. */
 function collectRosterPlayers(rosterPayload) {
   return [
     ...(rosterPayload?.forwards ?? []),
@@ -9,6 +10,7 @@ function collectRosterPlayers(rosterPayload) {
   ];
 }
 
+/** Builds the player entity for a raw roster player. */
 function buildRosterPlayer(rawPlayer) {
   return buildPlayer(rawPlayer, {
     positionCode: rawPlayer.positionCode,
@@ -16,6 +18,7 @@ function buildRosterPlayer(rawPlayer) {
   });
 }
 
+/** Builds a roster_entries entity linking a player to a team and season. */
 function buildRosterEntry({ seasonId, triCode, teamId, rawPlayer, player }) {
   return {
     seasonId,
@@ -32,6 +35,10 @@ function buildRosterEntry({ seasonId, triCode, teamId, rawPlayer, player }) {
   };
 }
 
+/**
+ * Maps a roster payload into `{ rows: [{ player, rosterEntry }], skipped }`, where
+ * `skipped` counts players without a usable id.
+ */
 function mapRosterPayload({ seasonId, triCode, teamId = null, rosterPayload }) {
   const rows = [];
   let skipped = 0;

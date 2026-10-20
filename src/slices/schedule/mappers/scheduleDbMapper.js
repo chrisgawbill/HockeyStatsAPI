@@ -1,6 +1,10 @@
 const { firstValue, toInteger } = require('#platform/fieldValue.js');
 const { buildTeam } = require('#platform/entityBuilders.js');
 
+/**
+ * Flattens either schedule payload shape (club `games` or weekly `gameWeek`)
+ * into `{ rawGame, gameDate }` pairs, taking the date from the week if needed.
+ */
 function collectScheduleGames(schedulePayload) {
   if (Array.isArray(schedulePayload?.games)) {
     return schedulePayload.games.map((game) => ({
@@ -21,6 +25,7 @@ function collectScheduleGames(schedulePayload) {
   return games;
 }
 
+/** Builds the team entity for a game's home or away side. */
 function buildScheduleTeam(rawTeam) {
   return buildTeam(rawTeam, {
     triCode: rawTeam?.abbrev,
@@ -28,6 +33,7 @@ function buildScheduleTeam(rawTeam) {
   });
 }
 
+/** Builds a schedule_games entity from a raw game and its resolved teams. */
 function buildScheduleGame({
   seasonId,
   rawGame,
@@ -55,6 +61,10 @@ function buildScheduleGame({
   };
 }
 
+/**
+ * Maps a schedule payload into `{ rows: [{ homeTeam, awayTeam, game }], skipped }`,
+ * where `skipped` counts games without a usable id.
+ */
 function mapSchedulePayload({ seasonId, schedulePayload }) {
   const rows = [];
   let skipped = 0;

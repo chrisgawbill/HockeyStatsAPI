@@ -28,11 +28,11 @@ function chunk(rows, size) {
   if (!Number.isInteger(size) || size <= 0) {
     throw new Error(`chunk size must be a positive integer, got ${size}`);
   }
-  const out = [];
-  for (let i = 0; i < rows.length; i += size) {
-    out.push(rows.slice(i, i + size));
+  const chunks = [];
+  for (let start = 0; start < rows.length; start += size) {
+    chunks.push(rows.slice(start, start + size));
   }
-  return out;
+  return chunks;
 }
 
 /**
@@ -68,16 +68,16 @@ function dedupeByKey(rows, keyFn) {
  * @returns {string}
  */
 function buildValuesClause(numRows, colsPerRow, trailingLiterals = []) {
-  const tuples = [];
-  let param = 1;
-  for (let r = 0; r < numRows; r++) {
+  const rowTuples = [];
+  let nextParam = 1;
+  for (let rowIndex = 0; rowIndex < numRows; rowIndex++) {
     const placeholders = [];
-    for (let c = 0; c < colsPerRow; c++) {
-      placeholders.push(`$${param++}`);
+    for (let columnIndex = 0; columnIndex < colsPerRow; columnIndex++) {
+      placeholders.push(`$${nextParam++}`);
     }
-    tuples.push(`(${[...placeholders, ...trailingLiterals].join(', ')})`);
+    rowTuples.push(`(${[...placeholders, ...trailingLiterals].join(', ')})`);
   }
-  return tuples.join(', ');
+  return rowTuples.join(', ');
 }
 
 /**
@@ -101,19 +101,21 @@ async function batchUpsert(
   { table, columns, keyFn, onConflict, toParams },
   rows,
 ) {
-  const unique = dedupeByKey(rows, keyFn);
-  for (const batch of chunk(unique, MAX_ROWS_PER_STATEMENT)) {
-    const values = buildValuesClause(batch.length, columns.length, ['now()']);
+  const uniqueRows = dedupeByKey(rows, keyFn);
+  for (const batch of chunk(uniqueRows, MAX_ROWS_PER_STATEMENT)) {
+    const valuesClause = buildValuesClause(batch.length, columns.length, [
+      'now()',
+    ]);
     await client.query(
       `
 			INSERT INTO ${table} (${columns.join(', ')}, updated_at)
-			VALUES ${values}
+			VALUES ${valuesClause}
 			${onConflict}
 			`,
       batch.flatMap(toParams),
     );
   }
-  return unique.length;
+  return uniqueRows.length;
 }
 
 module.exports = {

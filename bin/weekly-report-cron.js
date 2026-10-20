@@ -22,6 +22,7 @@ function isSendWindow(nowMs = Date.now()) {
   return isMonday && hour >= SEND_HOUR_ET;
 }
 
+/** POSTs to the weekly-dispatch route, retrying once on network errors and 5xx responses. */
 async function callWeeklyDispatch(baseUrl, secret, weekStart) {
   const url = `${baseUrl.replace(/\/+$/, '')}/api/push/weekly-dispatch`;
   const body = weekStart ? JSON.stringify({ weekStart }) : undefined;
@@ -60,6 +61,7 @@ async function callWeeklyDispatch(baseUrl, secret, weekStart) {
   throw lastError;
 }
 
+/** Dispatches the weekly report when forced or inside the Monday send window. */
 async function main() {
   const secret = process.env.CRON_SECRET;
   const apiUrl = process.env.AAR_PUSH_API_URL;
@@ -74,12 +76,12 @@ async function main() {
     console.log('Before Monday 9:00 ET; skipping this run.');
     return;
   }
-  const result = await callWeeklyDispatch(
+  const dispatchSummary = await callWeeklyDispatch(
     apiUrl,
     secret,
     process.env.WEEK_START || undefined,
   );
-  console.log(JSON.stringify(result));
+  console.log(JSON.stringify(dispatchSummary));
 }
 
 if (require.main === module) {

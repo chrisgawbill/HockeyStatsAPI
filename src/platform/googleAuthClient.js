@@ -1,12 +1,13 @@
 const { OAuth2Client } = require('google-auth-library');
 
-let client = null;
+let oauthClient = null;
 
-function getClient() {
-  if (!client) {
-    client = new OAuth2Client(process.env.GOOGLE_OAUTH_CLIENT_ID);
+/** Lazily creates the shared Google OAuth2 client. */
+function getOAuthClient() {
+  if (!oauthClient) {
+    oauthClient = new OAuth2Client(process.env.GOOGLE_OAUTH_CLIENT_ID);
   }
-  return client;
+  return oauthClient;
 }
 
 /**
@@ -22,7 +23,7 @@ async function verifyGoogleIdToken(idToken) {
   if (!audience) {
     throw new Error('GOOGLE_OAUTH_CLIENT_ID is required to verify Google sign-in.');
   }
-  const ticket = await getClient().verifyIdToken({ idToken, audience });
+  const ticket = await getOAuthClient().verifyIdToken({ idToken, audience });
   return ticket.getPayload();
 }
 

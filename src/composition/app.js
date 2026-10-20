@@ -28,14 +28,17 @@ const {
   createWeeklyPlayerReportsRouter,
 } = require('#presentation/routes/weeklyPlayerReports.js');
 
+/**
+ * CORS settings. 'Authorization' is allowed for the bearer-token Google-account
+ * routes; this stays a bearer-token API, not a cookie session, so there is no
+ * `credentials` option.
+ */
 const corsOptions = {
   origin: [
     'http://localhost:3000',
     'http://localhost:5173',
     'https://chrisgawbill.github.io',
   ],
-  // 'Authorization' is required for the bearer-token Google-account routes
-  // (this stays a bearer-token API, not a cookie session: no `credentials`).
   allowedHeaders: ['Content-Type', 'x-diagnostics-key', 'Authorization'],
 };
 

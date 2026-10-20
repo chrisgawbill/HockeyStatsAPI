@@ -1,18 +1,14 @@
 #!/usr/bin/env node
 
-/**
- * Module dependencies.
- */
+const { bootstrap } = require('#composition/server.js');
+const debug = require('debug')('api:server');
+const http = require('http');
+const { scheduleNextRefresh } = require('#platform/refreshScheduler.js');
+const { closeDbPool } = require('#platform/pool.js');
+const { closeCachePool } = require('#platform/cacheManager.js');
 
-var { bootstrap } = require('#composition/server.js');
-var debug = require('debug')('api:server');
-var http = require('http');
-var { scheduleNextRefresh } = require('#platform/refreshScheduler.js');
-var { closeDbPool } = require('#platform/pool.js');
-var { closeCachePool } = require('#platform/cacheManager.js');
-
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught exception:', err);
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
   process.exit(1);
 });
 
@@ -20,61 +16,40 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason);
 });
 
-/**
- * Get port from environment and store in Express.
- */
+const { app, container } = bootstrap();
 
-var { app, container } = bootstrap();
-
-var port = normalizePort(process.env.PORT || '9000');
+const port = normalizePort(process.env.PORT || '9000');
 app.set('port', port);
 
-/**
- * Create HTTP server.
- */
-
-var server = http.createServer(app);
-
-/**
- * Listen on provided port, on all network interfaces.
- */
+const server = http.createServer(app);
 
 server.listen(port);
 server.on('error', onError);
 server.on('listening', onListening);
 
-/**
- * Normalize a port into a number, string, or false.
- */
+/** Parses a PORT value into a port number, a named-pipe string, or false if negative. */
+function normalizePort(rawPort) {
+  const parsedPort = parseInt(rawPort, 10);
 
-function normalizePort(val) {
-  var port = parseInt(val, 10);
-
-  if (isNaN(port)) {
-    // named pipe
-    return val;
+  if (isNaN(parsedPort)) {
+    return rawPort;
   }
 
-  if (port >= 0) {
-    // port number
-    return port;
+  if (parsedPort >= 0) {
+    return parsedPort;
   }
 
   return false;
 }
 
-/**
- * Event listener for HTTP server "error" event.
- */
-
+/** Exits with a friendly message on common listen errors; rethrows anything else. */
 function onError(error) {
   if (error.syscall !== 'listen') {
     throw error;
   }
 
-  var bind = typeof port === 'string' ? 'Pipe ' + port : 'Port ' + port;
+  const bind = typeof port === 'string' ? 'Pipe ' + port : 'Port ' + port;
 
-  // handle specific listen errors with friendly messages
   switch (error.code) {
     case 'EACCES':
       console.error(bind + ' requires elevated privileges');
@@ -89,17 +64,16 @@ function onError(error) {
   }
 }
 
-/**
- * Event listener for HTTP server "listening" event.
- */
-
+/** Logs the bound address and starts the schedule cache refresh timer. */
 function onListening() {
-  var addr = server.address();
-  var bind = typeof addr === 'string' ? 'pipe ' + addr : 'port ' + addr.port;
+  const address = server.address();
+  const bind =
+    typeof address === 'string' ? 'pipe ' + address : 'port ' + address.port;
   debug('Listening on ' + bind);
   scheduleNextRefresh(() => container.scheduleService.refreshScheduleCache());
 }
 
+/** Closes the server and database pools, force-exiting if that takes over 10 seconds. */
 async function shutdown(signal) {
   const forceExit = setTimeout(() => {
     console.error(`Forcefully exiting after 10 seconds due to ${signal}`);
@@ -107,13 +81,13 @@ async function shutdown(signal) {
   }, 10000);
   forceExit.unref();
 
-  server.close(async (err) => {
+  server.close(async () => {
     try {
       await closeDbPool();
       await closeCachePool();
       process.exit(0);
-    } catch (err) {
-      console.error(`Error during shutdown: ${err}`);
+    } catch (error) {
+      console.error(`Error during shutdown: ${error}`);
       process.exit(1);
     }
   });

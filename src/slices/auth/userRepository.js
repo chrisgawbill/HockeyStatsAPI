@@ -5,7 +5,7 @@
  * inserted row or the pre-existing one.
  */
 async function upsertUserByGoogleSub(client, { googleSub, email }) {
-  const result = await client.query(
+  const { rows: upsertedUserRows } = await client.query(
     `
 		INSERT INTO users (google_sub, email)
 		VALUES ($1, $2)
@@ -15,14 +15,16 @@ async function upsertUserByGoogleSub(client, { googleSub, email }) {
 		`,
     [googleSub, email ?? null],
   );
-  return result.rows[0];
+  return upsertedUserRows[0];
 }
 
+/** Fetches a user by id, or null. */
 async function getUserById(client, userId) {
-  const result = await client.query('SELECT * FROM users WHERE id = $1', [
-    userId,
-  ]);
-  return result.rows[0] ?? null;
+  const { rows: userRows } = await client.query(
+    'SELECT * FROM users WHERE id = $1',
+    [userId],
+  );
+  return userRows[0] ?? null;
 }
 
 module.exports = {

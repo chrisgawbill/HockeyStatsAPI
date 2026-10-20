@@ -5,6 +5,7 @@ const {
   hashPrompt,
 } = require('#slices/aiSummaries/mappers/aiSummaryDbMapper.js');
 
+/** Builds an AI summary row from the generated content and upserts it. */
 async function persistAiSummary({
   teamId = null,
   triCode,
@@ -77,16 +78,16 @@ function createAiSummaryService({ cache, runAIPythonScript, runServiceTask }) {
      * its output is cached before being returned.
      */
     async getTeamHistorySummary({ cacheKey, message, triCode }) {
-      const cached = await readCache(CACHE_TYPES.AI, cacheKey);
-      if (cached !== null) {
-        queuePersistence(cacheKey, cached, message, triCode);
-        return cached;
+      const cachedSummary = await readCache(CACHE_TYPES.AI, cacheKey);
+      if (cachedSummary !== null) {
+        queuePersistence(cacheKey, cachedSummary, message, triCode);
+        return cachedSummary;
       }
 
-      const result = await runAIPythonScript(message);
-      await writeCache(CACHE_TYPES.AI, cacheKey, result);
-      queuePersistence(cacheKey, result, message, triCode);
-      return result;
+      const generatedSummary = await runAIPythonScript(message);
+      await writeCache(CACHE_TYPES.AI, cacheKey, generatedSummary);
+      queuePersistence(cacheKey, generatedSummary, message, triCode);
+      return generatedSummary;
     },
 
     persistAiSummary,

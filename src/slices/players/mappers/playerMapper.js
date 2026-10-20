@@ -55,45 +55,45 @@
  */
 
 /**
- * Map the NHL skater summary payload into contract rows.
- * @param {any} raw - { data: [...] }
+ * Map the NHL skater summary payload into contract rows. The NHL returns 0 for
+ * players who take no faceoffs, so a faceoff percentage of 0 maps to null (N/A).
+ * @param {any} summaryPayload - { data: [...] }
  * @returns {SkaterSummaryContract[]}
  */
-function mapSkaterSummary(raw) {
-  return (raw?.data ?? []).map((p) => ({
-    playerId: p.playerId,
-    name: p.skaterFullName ?? '',
-    position: p.positionCode ?? '',
-    gamesPlayed: p.gamesPlayed ?? 0,
-    goals: p.goals ?? 0,
-    assists: p.assists ?? 0,
-    points: p.points ?? 0,
-    plusMinus: p.plusMinus ?? 0,
-    penaltyMinutes: p.penaltyMinutes ?? 0,
-    // NHL returns 0 for players who take no faceoffs — treat that as N/A, not 0%.
-    faceoffWinPct: p.faceoffWinPct > 0 ? p.faceoffWinPct : null,
-    toiPerGame: p.timeOnIcePerGame ?? null,
+function mapSkaterSummary(summaryPayload) {
+  return (summaryPayload?.data ?? []).map((skater) => ({
+    playerId: skater.playerId,
+    name: skater.skaterFullName ?? '',
+    position: skater.positionCode ?? '',
+    gamesPlayed: skater.gamesPlayed ?? 0,
+    goals: skater.goals ?? 0,
+    assists: skater.assists ?? 0,
+    points: skater.points ?? 0,
+    plusMinus: skater.plusMinus ?? 0,
+    penaltyMinutes: skater.penaltyMinutes ?? 0,
+    faceoffWinPct: skater.faceoffWinPct > 0 ? skater.faceoffWinPct : null,
+    toiPerGame: skater.timeOnIcePerGame ?? null,
   }));
 }
 
 /**
- * Map the NHL goalie summary payload into contract rows.
- * @param {any} raw - { data: [...] }
+ * Map the NHL goalie summary payload into contract rows. The frontend read
+ * `goalieId` but the endpoint may also expose `playerId`, so either is accepted
+ * to keep the TOI merge robust.
+ * @param {any} summaryPayload - { data: [...] }
  * @returns {GoalieSummaryContract[]}
  */
-function mapGoalieSummary(raw) {
-  return (raw?.data ?? []).map((g) => ({
-    // NOTE: the frontend read `goalieId`; the rest endpoint may also expose
-    // `playerId`. Accept either so the TOI merge stays robust.
-    goalieId: g.goalieId ?? g.playerId,
-    name: g.goalieFullName ?? '',
-    gamesPlayed: g.gamesPlayed ?? 0,
-    wins: g.wins ?? 0,
-    losses: g.losses ?? 0,
-    savePctg: g.savePct ?? null,
-    goalsAgainstAverage: g.goalsAgainstAverage ?? null,
-    shutouts: g.shutouts ?? 0,
-    toiPerGame: g.timeOnIcePerGame ?? null,
+function mapGoalieSummary(summaryPayload) {
+  return (summaryPayload?.data ?? []).map((goalie) => ({
+    goalieId: goalie.goalieId ?? goalie.playerId,
+    name: goalie.goalieFullName ?? '',
+    gamesPlayed: goalie.gamesPlayed ?? 0,
+    wins: goalie.wins ?? 0,
+    losses: goalie.losses ?? 0,
+    savePctg: goalie.savePct ?? null,
+    goalsAgainstAverage: goalie.goalsAgainstAverage ?? null,
+    shutouts: goalie.shutouts ?? 0,
+    toiPerGame: goalie.timeOnIcePerGame ?? null,
   }));
 }
 

@@ -15,7 +15,7 @@ const {
  */
 function createStandingsService({ nhlApi, cache, seasons }) {
   const { axiosNhl } = nhlApi;
-  const { GetOrFetch, CACHE_TYPES } = cache;
+  const { getOrFetchCached, CACHE_TYPES } = cache;
 
   /**
    * The standings-season index lists each season's final date (standingsEnd),
@@ -24,13 +24,15 @@ function createStandingsService({ nhlApi, cache, seasons }) {
    * @returns {Promise<string|null>} YYYY-MM-DD end date, or null if season unknown
    */
   async function getSeasonEndDate(season) {
-    const data = await GetOrFetch(CACHE_TYPES.STANDINGS, 'season-index', () =>
-      axiosNhl.get('/standings-season').then((r) => r.data),
+    const seasonIndex = await getOrFetchCached(
+      CACHE_TYPES.STANDINGS,
+      'season-index',
+      () => axiosNhl.get('/standings-season').then((response) => response.data),
     );
-    const match = (data.seasons ?? []).find(
-      (s) => String(s.id) === String(season),
+    const matchingSeason = (seasonIndex.seasons ?? []).find(
+      (indexedSeason) => String(indexedSeason.id) === String(season),
     );
-    return match?.standingsEnd ?? null;
+    return matchingSeason?.standingsEnd ?? null;
   }
 
   /**
@@ -57,13 +59,15 @@ function createStandingsService({ nhlApi, cache, seasons }) {
      * normalized StandingsTeamContract rows.
      */
     async getStandings(seasonId) {
-      const data = await GetOrFetch(CACHE_TYPES.STANDINGS, seasonId, () =>
-        fetchStandings(seasonId),
+      const standingsPayload = await getOrFetchCached(
+        CACHE_TYPES.STANDINGS,
+        seasonId,
+        () => fetchStandings(seasonId),
       );
-      const standings = (data.standings ?? [])
+      const standings = (standingsPayload.standings ?? [])
         .map(mapStandingsTeam)
         .filter(Boolean);
-      return { ...data, standings };
+      return { ...standingsPayload, standings };
     },
   };
 }

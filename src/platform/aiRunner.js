@@ -19,17 +19,17 @@ function runAIPythonScript(message) {
         : path.join(__dirname, '../../venv/bin/python3');
     const pythonProcess = spawn(pythonPath, [SCRIPT_PATH, message]);
 
-    let stdoutData = '';
+    let stdout = '';
 
-    pythonProcess.on('error', (err) => {
-      console.error('Failed to start python process: ', err);
-      reject(`Failed to start python process: ${err.message}`);
+    pythonProcess.on('error', (error) => {
+      console.error('Failed to start python process: ', error);
+      reject(`Failed to start python process: ${error.message}`);
     });
-    pythonProcess.stdout.on('data', (data) => {
-      stdoutData += data.toString();
+    pythonProcess.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
     });
-    pythonProcess.stderr.on('data', (data) => {
-      console.error('stderr: ' + data);
+    pythonProcess.stderr.on('data', (chunk) => {
+      console.error('stderr: ' + chunk);
     });
     pythonProcess.on('close', (code) => {
       console.log('child process exited with code: ' + code);
@@ -37,14 +37,14 @@ function runAIPythonScript(message) {
         reject(`Process exited with code ${code}`);
       } else {
         try {
-          const jsonReponse = JSON.parse(stdoutData);
-          if (jsonReponse.error) {
-            reject(jsonReponse.error);
+          const scriptResponse = JSON.parse(stdout);
+          if (scriptResponse.error) {
+            reject(scriptResponse.error);
           } else {
-            resolve(jsonReponse.data);
+            resolve(scriptResponse.data);
           }
-        } catch (e) {
-          reject(`Error parsing JSON response\n${stdoutData}`);
+        } catch {
+          reject(`Error parsing JSON response\n${stdout}`);
         }
       }
     });

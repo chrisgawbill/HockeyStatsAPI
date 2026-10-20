@@ -25,8 +25,8 @@ function createPushRouter({
   router.get('/config', (req, res, next) => {
     try {
       res.send(pushNotificationService.getConfig());
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -34,8 +34,8 @@ function createPushRouter({
     try {
       await pushNotificationService.subscribe(req.userId, req.body);
       res.status(204).end();
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -43,8 +43,8 @@ function createPushRouter({
     try {
       await pushNotificationService.unsubscribe(req.userId, req.body);
       res.status(204).end();
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -52,8 +52,8 @@ function createPushRouter({
     try {
       await pushNotificationService.markReadFromToken((req.body || {}).token);
       res.status(204).end();
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -63,16 +63,16 @@ function createPushRouter({
         req.get('authorization'),
       );
       res.send(await pushNotificationService.dispatch());
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
   router.get('/weekly-report', requireAuth, async (req, res, next) => {
     try {
       res.send(await pushNotificationService.getWeeklyReportPush(req.userId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -84,8 +84,8 @@ function createPushRouter({
           (req.body || {}).enabled,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -102,8 +102,8 @@ function createPushRouter({
             weekStart: (req.body || {}).weekStart,
           }),
         );
-      } catch (e) {
-        next(e);
+      } catch (error) {
+        next(error);
       }
     },
   );

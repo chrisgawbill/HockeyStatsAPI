@@ -1,10 +1,12 @@
 const { firstValue, toInteger, toNumber } = require('#platform/fieldValue.js');
 const { buildTeam: buildBaseTeam } = require('#platform/entityBuilders.js');
 
+/** Builds a team entity from a stats or standings row. */
 function buildTeam(rawTeam) {
   return buildBaseTeam(rawTeam);
 }
 
+/** Merges two views of the same team (stats and standings), preferring the primary's values. */
 function mergeTeam(primary, secondary) {
   if (!primary) return secondary;
   if (!secondary) return primary;
@@ -23,6 +25,7 @@ function mergeTeam(primary, secondary) {
   };
 }
 
+/** Indexes standings rows by team id and tri-code. */
 function buildStandingsLookup(standingsPayload) {
   const standingsRows = standingsPayload?.standings ?? [];
   const byTeamId = new Map();
@@ -37,6 +40,7 @@ function buildStandingsLookup(standingsPayload) {
   return { byTeamId, byTriCode, rows: standingsRows };
 }
 
+/** Builds a team_season_snapshots entity, preferring stats values over standings values. */
 function buildTeamSeasonSnapshot({ seasonId, statsRow, standingsRow, team }) {
   return {
     seasonId,
@@ -93,6 +97,11 @@ function buildTeamSeasonSnapshot({ seasonId, statsRow, standingsRow, team }) {
   };
 }
 
+/**
+ * Maps team stats and standings payloads into `{ rows: [{ team, snapshot }], skipped }`.
+ * Teams that appear only in standings still get a snapshot; `skipped` counts
+ * stats rows without a usable team id.
+ */
 function mapTeamSeasonPayload({
   seasonId,
   teamStatsPayload,

@@ -10,25 +10,25 @@
  * Map a stat-leaders payload for a single category into contract rows.
  * The raw payload is keyed by category (goals, assists, wins, savePctg, ...);
  * select raw[category], then map each entry. Guards every `.default` unwrap.
- * @param {any} raw
+ * @param {any} leadersPayload
  * @param {string} category - e.g. "goals" | "assists" | "wins" | "savePctg"
  * @returns {StatLeaderContract[]}
  */
-function mapStatLeaders(raw, category) {
-  const list = raw?.[category];
-  if (!Array.isArray(list)) return [];
+function mapStatLeaders(leadersPayload, category) {
+  const rawLeaders = leadersPayload?.[category];
+  if (!Array.isArray(rawLeaders)) return [];
 
-  return list.map((p) => ({
-    id: p.id,
-    firstName: p.firstName?.default ?? '',
-    lastName: p.lastName?.default ?? '',
-    sweaterNumber: p.sweaterNumber ?? null,
-    headshot: p.headshot ?? '',
-    teamAbbrev: p.teamAbbrev ?? '',
-    teamName: p.teamName?.default ?? '',
-    teamLogo: p.teamLogo ?? '',
-    position: p.position ?? '',
-    value: p.value,
+  return rawLeaders.map((rawLeader) => ({
+    id: rawLeader.id,
+    firstName: rawLeader.firstName?.default ?? '',
+    lastName: rawLeader.lastName?.default ?? '',
+    sweaterNumber: rawLeader.sweaterNumber ?? null,
+    headshot: rawLeader.headshot ?? '',
+    teamAbbrev: rawLeader.teamAbbrev ?? '',
+    teamName: rawLeader.teamName?.default ?? '',
+    teamLogo: rawLeader.teamLogo ?? '',
+    position: rawLeader.position ?? '',
+    value: rawLeader.value,
   }));
 }
 

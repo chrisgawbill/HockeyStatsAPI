@@ -24,7 +24,7 @@ const MONTHS = [
   'Dec',
 ];
 
-const easternParts = new Intl.DateTimeFormat('en-US', {
+const easternFormatter = new Intl.DateTimeFormat('en-US', {
   timeZone: REPORT_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
@@ -33,34 +33,39 @@ const easternParts = new Intl.DateTimeFormat('en-US', {
   hourCycle: 'h23',
 });
 
+/** The Eastern-time calendar date (YYYY-MM-DD) and hour (0-23) at an epoch-millisecond instant. */
 function easternClock(ms) {
-  const parts = Object.fromEntries(
-    easternParts.formatToParts(new Date(ms)).map((p) => [p.type, p.value]),
+  const partsByType = Object.fromEntries(
+    easternFormatter
+      .formatToParts(new Date(ms))
+      .map((part) => [part.type, part.value]),
   );
   return {
-    date: `${parts.year}-${parts.month}-${parts.day}`,
-    hour: Number(parts.hour),
+    date: `${partsByType.year}-${partsByType.month}-${partsByType.day}`,
+    hour: Number(partsByType.hour),
   };
 }
 
+/** Parses a YYYY-MM-DD date as midnight UTC. */
 function parseDay(date) {
   return new Date(`${date}T00:00:00Z`);
 }
 
+/** Adds (or subtracts) whole days to a YYYY-MM-DD date. */
 function addDays(date, days) {
-  const d = parseDay(date);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+  const shiftedDay = parseDay(date);
+  shiftedDay.setUTCDate(shiftedDay.getUTCDate() + days);
+  return shiftedDay.toISOString().slice(0, 10);
 }
 
 /** True for a real calendar date (YYYY-MM-DD) that falls on a Monday. */
 function isWeekStart(value) {
   if (typeof value !== 'string' || !DATE_PATTERN.test(value)) return false;
-  const d = parseDay(value);
+  const day = parseDay(value);
   return (
-    !Number.isNaN(d.getTime()) &&
-    d.toISOString().slice(0, 10) === value &&
-    d.getUTCDay() === 1
+    !Number.isNaN(day.getTime()) &&
+    day.toISOString().slice(0, 10) === value &&
+    day.getUTCDay() === 1
   );
 }
 
@@ -71,32 +76,36 @@ function previousWeekStart(nowMs) {
   return addDays(today, -sinceMonday - 7);
 }
 
+/** The Sunday that ends the week starting on `weekStart`. */
 function weekEndOf(weekStart) {
   return addDays(weekStart, 6);
 }
 
+/** Formats a YYYY-MM-DD date as e.g. "Oct 13". */
 function shortDate(date) {
-  const d = parseDay(date);
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+  const day = parseDay(date);
+  return `${MONTHS[day.getUTCMonth()]} ${day.getUTCDate()}`;
 }
 
 /** "Oct 13–19", or "Sep 29–Oct 5" across a month boundary. */
 function formatWeekLabel(weekStart) {
-  const start = parseDay(weekStart);
-  const end = parseDay(weekEndOf(weekStart));
+  const startDay = parseDay(weekStart);
+  const endDay = parseDay(weekEndOf(weekStart));
   const endText =
-    start.getUTCMonth() === end.getUTCMonth()
-      ? String(end.getUTCDate())
+    startDay.getUTCMonth() === endDay.getUTCMonth()
+      ? String(endDay.getUTCDate())
       : shortDate(weekEndOf(weekStart));
   return `${shortDate(weekStart)}–${endText}`;
 }
 
-function toNumber(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? n : 0;
+/** Converts to a finite number, treating anything else as 0. */
+function toNumberOrZero(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
 }
 
-function abbrev(team) {
+/** Team abbreviation from a schedule team object (or plain string), or null. */
+function getTeamAbbrev(team) {
   if (!team) return null;
   if (typeof team === 'string') return team;
   return team.abbrev ?? team.triCode ?? null;
@@ -119,8 +128,8 @@ function summarizeWeekSchedule(payload, weekStart) {
       if (!Number.isSafeInteger(gameId) || gamesById.has(gameId)) continue;
       if (!COUNTED_GAME_TYPES.has(Number(game?.gameType))) continue;
       if (!COMPLETED_GAME_STATES.has(game?.gameState)) continue;
-      const homeTeam = abbrev(game.homeTeam);
-      const awayTeam = abbrev(game.awayTeam);
+      const homeTeam = getTeamAbbrev(game.homeTeam);
+      const awayTeam = getTeamAbbrev(game.awayTeam);
       gamesById.set(gameId, { gameId, date, homeTeam, awayTeam });
       for (const team of [homeTeam, awayTeam]) {
         if (team) gamesByTeam[team] = (gamesByTeam[team] ?? 0) + 1;
@@ -138,61 +147,76 @@ function summarizeWeekSchedule(payload, weekStart) {
  */
 function normalizeGameRows(payloadRows, { playerIds, weekStart }) {
   const weekEnd = weekEndOf(weekStart);
-  const wanted = new Set(playerIds.map(Number));
-  const seen = new Set();
-  const rows = [];
-  for (const row of payloadRows ?? []) {
-    const playerId = Number(row?.playerId);
-    const gameId = Number(row?.gameId);
-    const date = String(row?.gameDate ?? '').slice(0, 10);
-    if (!wanted.has(playerId) || !Number.isSafeInteger(gameId)) continue;
+  const wantedPlayerIds = new Set(playerIds.map(Number));
+  const seenKeys = new Set();
+  const gameRows = [];
+  for (const payloadRow of payloadRows ?? []) {
+    const playerId = Number(payloadRow?.playerId);
+    const gameId = Number(payloadRow?.gameId);
+    const date = String(payloadRow?.gameDate ?? '').slice(0, 10);
+    if (!wantedPlayerIds.has(playerId) || !Number.isSafeInteger(gameId)) {
+      continue;
+    }
     if (!date || date < weekStart || date > weekEnd) continue;
     if (
-      row.gameTypeId !== undefined &&
-      !COUNTED_GAME_TYPES.has(Number(row.gameTypeId))
+      payloadRow.gameTypeId !== undefined &&
+      !COUNTED_GAME_TYPES.has(Number(payloadRow.gameTypeId))
     ) {
       continue;
     }
-    const key = `${playerId}:${gameId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    rows.push({ ...row, playerId, gameId, gameDate: date });
+    const playerGameKey = `${playerId}:${gameId}`;
+    if (seenKeys.has(playerGameKey)) continue;
+    seenKeys.add(playerGameKey);
+    gameRows.push({ ...payloadRow, playerId, gameId, gameDate: date });
   }
-  return rows;
+  return gameRows;
 }
 
+/** Formats seconds as m:ss. */
 function formatToi(seconds) {
-  const total = Math.round(seconds);
-  const minutes = Math.floor(total / 60);
-  return `${minutes}:${String(total % 60).padStart(2, '0')}`;
+  const totalSeconds = Math.round(seconds);
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes}:${String(totalSeconds % 60).padStart(2, '0')}`;
 }
 
-function opponentOf(row, team, gamesById) {
-  if (row.opponentTeamAbbrev) return row.opponentTeamAbbrev;
-  const game = gamesById.get(row.gameId);
+/** The opponent in a game row: the row's own field, else derived from the schedule. */
+function opponentOf(gameRow, team, gamesById) {
+  if (gameRow.opponentTeamAbbrev) return gameRow.opponentTeamAbbrev;
+  const game = gamesById.get(gameRow.gameId);
   if (!game) return null;
   return game.homeTeam === team ? game.awayTeam : game.homeTeam;
 }
 
-function bestSkaterGame(rows, gamesById) {
-  const best = [...rows].sort(
-    (a, b) =>
-      toNumber(b.points) - toNumber(a.points) ||
-      toNumber(b.goals) - toNumber(a.goals) ||
-      b.gameDate.localeCompare(a.gameDate),
+/** The skater's best game of the week by points, then goals, then latest date; null if no points. */
+function bestSkaterGame(gameRows, gamesById) {
+  const best = [...gameRows].sort(
+    (gameA, gameB) =>
+      toNumberOrZero(gameB.points) - toNumberOrZero(gameA.points) ||
+      toNumberOrZero(gameB.goals) - toNumberOrZero(gameA.goals) ||
+      gameB.gameDate.localeCompare(gameA.gameDate),
   )[0];
-  if (!best || toNumber(best.points) <= 0) return null;
+  if (!best || toNumberOrZero(best.points) <= 0) return null;
   const opponent = opponentOf(best, best.teamAbbrev, gamesById);
   const versus = opponent ? ` vs ${opponent}` : '';
   return {
     gameId: best.gameId,
-    text: `${toNumber(best.goals)}G ${toNumber(best.assists)}A${versus}, ${shortDate(best.gameDate)}`,
+    text: `${toNumberOrZero(best.goals)}G ${toNumberOrZero(best.assists)}A${versus}, ${shortDate(best.gameDate)}`,
   };
 }
 
-function skaterStats(rows, gamesById) {
-  const sum = (field) => rows.reduce((t, r) => t + toNumber(r[field]), 0);
-  const gp = rows.length;
+/** Totals one numeric field across game rows, counting missing values as 0. */
+function sumField(gameRows, field) {
+  return gameRows.reduce(
+    (total, gameRow) => total + toNumberOrZero(gameRow[field]),
+    0,
+  );
+}
+
+/** Sums a skater's game rows into the week's stat line. */
+function skaterStats(gameRows, gamesById) {
+  /** Total of a stat field across the games. */
+  const sum = (field) => sumField(gameRows, field);
+  const gp = gameRows.length;
   return {
     gp,
     goals: sum('goals'),
@@ -201,12 +225,14 @@ function skaterStats(rows, gamesById) {
     plusMinus: sum('plusMinus'),
     shots: sum('shots'),
     toiPerGame: gp ? formatToi(sum('timeOnIcePerGame') / gp) : null,
-    bestGame: bestSkaterGame(rows, gamesById),
+    bestGame: bestSkaterGame(gameRows, gamesById),
   };
 }
 
-function goalieStats(rows) {
-  const sum = (field) => rows.reduce((t, r) => t + toNumber(r[field]), 0);
+/** Sums a goalie's game rows into the week's stat line (record, save percentage, GAA). */
+function goalieStats(gameRows) {
+  /** Total of a stat field across the games. */
+  const sum = (field) => sumField(gameRows, field);
   const wins = sum('wins');
   const losses = sum('losses');
   const otLosses = sum('otLosses');
@@ -214,7 +240,7 @@ function goalieStats(rows) {
   const shotsAgainst = sum('shotsAgainst');
   const toi = sum('timeOnIce');
   return {
-    gp: rows.length,
+    gp: gameRows.length,
     wins,
     losses,
     otLosses,
@@ -231,14 +257,16 @@ function goalieStats(rows) {
   };
 }
 
+/** True when the favorite's position is goalie. */
 function isGoalie(favorite) {
   return favorite.position === 'G';
 }
 
+/** One-line summary of a player's week, e.g. "2G 1A in 3 GP". */
 function performanceLine(player) {
-  const s = player.stats;
-  if (player.type === 'goalie') return `${s.record} in ${s.gp} GP`;
-  return `${s.goals}G ${s.assists}A in ${s.gp} GP`;
+  const { stats } = player;
+  if (player.type === 'goalie') return `${stats.record} in ${stats.gp} GP`;
+  return `${stats.goals}G ${stats.assists}A in ${stats.gp} GP`;
 }
 
 /**
@@ -247,22 +275,23 @@ function performanceLine(player) {
  * players who played.
  */
 function buildHeadline(players) {
-  const played = players.filter((p) => p.played);
+  const played = players.filter((player) => player.played);
   if (played.length === 0) {
     return 'Your favorite players did not play this week.';
   }
-  const skaters = played
-    .filter((p) => p.type === 'skater' && p.stats.points > 0)
+  const scoringSkaters = played
+    .filter((player) => player.type === 'skater' && player.stats.points > 0)
     .sort(
-      (a, b) =>
-        b.stats.points - a.stats.points || b.stats.goals - a.stats.goals,
+      (playerA, playerB) =>
+        playerB.stats.points - playerA.stats.points ||
+        playerB.stats.goals - playerA.stats.goals,
     );
-  const goalies = played
-    .filter((p) => p.type === 'goalie' && p.stats.wins > 0)
-    .sort((a, b) => b.stats.wins - a.stats.wins);
-  const top = skaters[0] ?? goalies[0] ?? played[0];
-  const others = played.length - 1;
-  return `${top.name}: ${performanceLine(top)}${others > 0 ? ` and ${others} more` : ''}`;
+  const winningGoalies = played
+    .filter((player) => player.type === 'goalie' && player.stats.wins > 0)
+    .sort((playerA, playerB) => playerB.stats.wins - playerA.stats.wins);
+  const topPlayer = scoringSkaters[0] ?? winningGoalies[0] ?? played[0];
+  const otherCount = played.length - 1;
+  return `${topPlayer.name}: ${performanceLine(topPlayer)}${otherCount > 0 ? ` and ${otherCount} more` : ''}`;
 }
 
 /**
@@ -284,19 +313,21 @@ function buildWeeklyReport({
   goalieRows,
   schedule,
 }) {
-  const rowsByPlayer = new Map();
-  for (const row of [...skaterRows, ...goalieRows]) {
-    const list = rowsByPlayer.get(row.playerId) ?? [];
-    list.push(row);
-    rowsByPlayer.set(row.playerId, list);
+  const gameRowsByPlayer = new Map();
+  for (const gameRow of [...skaterRows, ...goalieRows]) {
+    const playerGameRows = gameRowsByPlayer.get(gameRow.playerId) ?? [];
+    playerGameRows.push(gameRow);
+    gameRowsByPlayer.set(gameRow.playerId, playerGameRows);
   }
 
   const players = favorites.map((favorite) => {
     const type = isGoalie(favorite) ? 'goalie' : 'skater';
-    const rows = (rowsByPlayer.get(favorite.playerId) ?? []).sort((a, b) =>
-      a.gameDate.localeCompare(b.gameDate),
+    const gameRows = (gameRowsByPlayer.get(favorite.playerId) ?? []).sort(
+      (gameA, gameB) => gameA.gameDate.localeCompare(gameB.gameDate),
     );
-    const teams = [...new Set(rows.map((r) => r.teamAbbrev).filter(Boolean))];
+    const teams = [
+      ...new Set(gameRows.map((gameRow) => gameRow.teamAbbrev).filter(Boolean)),
+    ];
     return {
       playerId: favorite.playerId,
       name: favorite.name,
@@ -305,17 +336,19 @@ function buildWeeklyReport({
       team: teams[teams.length - 1] ?? favorite.teamTriCode,
       teams: teams.length ? teams : [favorite.teamTriCode].filter(Boolean),
       type,
-      played: rows.length > 0,
+      played: gameRows.length > 0,
       teamGames: schedule.gamesByTeam[favorite.teamTriCode] ?? 0,
-      stats: rows.length
+      stats: gameRows.length
         ? type === 'goalie'
-          ? goalieStats(rows)
-          : skaterStats(rows, schedule.gamesById)
+          ? goalieStats(gameRows)
+          : skaterStats(gameRows, schedule.gamesById)
         : null,
     };
   });
 
-  const anyActivity = players.some((p) => p.played || p.teamGames > 0);
+  const anyActivity = players.some(
+    (player) => player.played || player.teamGames > 0,
+  );
   if (!anyActivity) return null;
 
   return {

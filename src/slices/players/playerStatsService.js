@@ -11,6 +11,11 @@ const {
   mapPlayerStatsPayload,
 } = require('#slices/players/mappers/playerStatsDbMapper.js');
 
+/**
+ * Upserts a season's player stats (and the players they belong to) in one
+ * transaction: the season row first (FK parent), then players before stats
+ * (player_season_stats references players).
+ */
 async function persistPlayerStats({
   seasonId,
   playerType,
@@ -18,7 +23,7 @@ async function persistPlayerStats({
   teamId = null,
   teamScope = teamId ? String(teamId) : 'all',
 }) {
-  const mapped = mapPlayerStatsPayload({
+  const mappedStats = mapPlayerStatsPayload({
     seasonId,
     playerType,
     statsPayload,
@@ -27,8 +32,6 @@ async function persistPlayerStats({
   });
 
   return await withTransaction(async (client) => {
-    // Season row first (FK parent), then players before stats
-    // (player_season_stats references players).
     await seasonsRepository.upsertSeason(
       client,
       buildSeason(seasonId, { [`${playerType}Stats`]: statsPayload ?? null }),
@@ -36,14 +39,14 @@ async function persistPlayerStats({
 
     const playersUpserted = await playersRepository.upsertPlayers(
       client,
-      mapped.rows.map((row) => row.player),
+      mappedStats.rows.map((mappedRow) => mappedRow.player),
     );
     const statsUpserted = await playerStatsRepository.upsertPlayerSeasonStats(
       client,
-      mapped.rows.map((row) => row.stats),
+      mappedStats.rows.map((mappedRow) => mappedRow.stats),
     );
 
-    return { playersUpserted, statsUpserted, skipped: mapped.skipped };
+    return { playersUpserted, statsUpserted, skipped: mappedStats.skipped };
   });
 }
 
@@ -62,74 +65,74 @@ async function persistPlayerStats({
  */
 function createPlayerStatsService({ nhlApi, cache, runServiceTask }) {
   const { axiosNhlStats, axiosNhlGoalie } = nhlApi;
-  const { GetOrFetch, CACHE_TYPES } = cache;
+  const { getOrFetchCached, CACHE_TYPES } = cache;
 
   /** NHL stats API filter for one season, optionally narrowed to one team. */
-  function cayenneExp(seasonId, teamId) {
-    let exp = `seasonId=${seasonId} and gameTypeId=2`;
-    if (teamId) exp += ` and teamId=${teamId}`;
-    return encodeURIComponent(exp);
+  function buildCayenneFilter(seasonId, teamId) {
+    let filter = `seasonId=${seasonId} and gameTypeId=2`;
+    if (teamId) filter += ` and teamId=${teamId}`;
+    return encodeURIComponent(filter);
   }
 
   return {
     /** Normalized SkaterSummaryContract rows. */
     async getSkaterSummary(teamId, seasonId) {
-      const raw = await GetOrFetch(
+      const statsPayload = await getOrFetchCached(
         CACHE_TYPES.PLAYER,
         `skater_summary_${teamId || 'all'}_${seasonId}`,
         () =>
           axiosNhlStats
             .get(
-              `/summary?cayenneExp=${cayenneExp(seasonId, teamId)}&limit=100`,
+              `/summary?cayenneExp=${buildCayenneFilter(seasonId, teamId)}&limit=100`,
             )
-            .then((r) => r.data),
+            .then((response) => response.data),
       );
       runServiceTask(`skater summary ${teamId || 'all'} ${seasonId}`, () =>
         persistPlayerStats({
           seasonId,
           playerType: 'skater',
-          statsPayload: raw,
+          statsPayload,
           teamId: teamId ? Number(teamId) : null,
         }),
       );
-      return mapSkaterSummary(raw);
+      return mapSkaterSummary(statsPayload);
     },
 
     /** Raw SAT/Corsi percentages, merged by playerId on the frontend. */
     async getSkaterCorsi(teamId, seasonId) {
-      return await GetOrFetch(
+      return await getOrFetchCached(
         CACHE_TYPES.PLAYER,
         `skater_corsi_${teamId || 'all'}_${seasonId}`,
         () =>
           axiosNhlStats
             .get(
-              `/percentages?cayenneExp=${cayenneExp(seasonId, teamId)}&limit=100`,
+              `/percentages?cayenneExp=${buildCayenneFilter(seasonId, teamId)}&limit=100`,
             )
-            .then((r) => r.data),
+            .then((response) => response.data),
       );
     },
 
     /** Normalized GoalieSummaryContract rows. */
     async getGoalieSummary(teamId, seasonId) {
-      const raw = await GetOrFetch(
+      const statsPayload = await getOrFetchCached(
         CACHE_TYPES.PLAYER,
         `goalie_summary_${teamId || 'all'}_${seasonId}`,
         () =>
           axiosNhlGoalie
             .get(
-              `/summary?cayenneExp=${cayenneExp(seasonId, teamId)}&limit=100`,
+              `/summary?cayenneExp=${buildCayenneFilter(seasonId, teamId)}&limit=100`,
             )
-            .then((r) => r.data),
+            .then((response) => response.data),
       );
       runServiceTask(`goalie summary ${teamId || 'all'} ${seasonId}`, () =>
         persistPlayerStats({
           seasonId,
           playerType: 'goalie',
-          statsPayload: raw,
+          statsPayload,
           teamId: teamId ? Number(teamId) : null,
         }),
       );
-      return mapGoalieSummary(raw);
+      return mapGoalieSummary(statsPayload);
     },
 
     persistPlayerStats,

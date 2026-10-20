@@ -68,14 +68,14 @@ function fakeDb() {
       if (sql.includes('SELECT team_tri_code')) {
         return {
           rows: db.favorites
-            .filter((f) => f.user_id === params[0])
-            .map((f) => ({ ...f })),
+            .filter((favorite) => favorite.user_id === params[0])
+            .map((favorite) => ({ ...favorite })),
         };
       }
       if (sql.includes('INSERT INTO favorite_teams')) {
         if (
           !db.favorites.some(
-            (f) => f.user_id === params[0] && f.team_tri_code === params[1],
+            (favorite) => favorite.user_id === params[0] && favorite.team_tri_code === params[1],
           )
         ) {
           db.favorites.push({
@@ -89,7 +89,7 @@ function fakeDb() {
       }
       if (sql.includes('UPDATE favorite_teams')) {
         const row = db.favorites.find(
-          (f) => f.user_id === params[0] && f.team_tri_code === params[1],
+          (favorite) => favorite.user_id === params[0] && favorite.team_tri_code === params[1],
         );
         if (row) row.push_muted = params[2];
         return { rows: [], rowCount: row ? 1 : 0 };
@@ -107,7 +107,9 @@ function fakeDb() {
       }
       if (sql.includes('INSERT INTO push_subscriptions')) {
         const [user_id, endpoint, p256dh, auth] = params;
-        const existing = db.subs.find((s) => s.endpoint === endpoint);
+        const existing = db.subs.find(
+          (subscription) => subscription.endpoint === endpoint,
+        );
         if (existing) Object.assign(existing, { user_id, p256dh, auth });
         else db.subs.push({ id: db.nextId++, user_id, endpoint, p256dh, auth });
         return { rows: [] };
@@ -115,17 +117,25 @@ function fakeDb() {
       if (sql.includes('DELETE FROM push_subscriptions WHERE user_id')) {
         const before = db.subs.length;
         db.subs = db.subs.filter(
-          (s) => !(s.user_id === params[0] && s.endpoint === params[1]),
+          (subscription) =>
+            !(
+              subscription.user_id === params[0] &&
+              subscription.endpoint === params[1]
+            ),
         );
         return { rows: [], rowCount: before - db.subs.length };
       }
       if (sql.includes('DELETE FROM push_subscriptions WHERE id')) {
-        db.subs = db.subs.filter((s) => s.id !== params[0]);
+        db.subs = db.subs.filter(
+          (subscription) => subscription.id !== params[0],
+        );
         return { rows: [] };
       }
       if (sql.includes('SELECT DISTINCT user_id')) {
         return {
-          rows: [...new Set(db.subs.map((s) => s.user_id))].map((user_id) => ({
+          rows: [
+            ...new Set(db.subs.map((subscription) => subscription.user_id)),
+          ].map((user_id) => ({
             user_id,
           })),
         };
@@ -133,8 +143,8 @@ function fakeDb() {
       if (sql.includes('FROM push_subscriptions')) {
         return {
           rows: db.subs
-            .filter((s) => s.user_id === params[0])
-            .map((s) => ({ ...s })),
+            .filter((subscription) => subscription.user_id === params[0])
+            .map((subscription) => ({ ...subscription })),
         };
       }
       if (
@@ -189,7 +199,7 @@ function build({ games, sendImpl, favoritePlayers = [], boxscore, boxscoreError 
       scheduleCalls.recent.push([triCode, Boolean(options?.fresh)]);
       return {
         games: gameList.filter(
-          (g) => g.homeTeam === triCode || g.awayTeam === triCode,
+          (game) => game.homeTeam === triCode || game.awayTeam === triCode,
         ),
       };
     },
@@ -260,8 +270,8 @@ test('game notification highlights only favorite skaters and their scoring miles
     ] },
     awayTeam: { defense: [{ playerId: 3, goals: 1, assists: 1 }] },
   } };
-  const result = buildNotification(game({ periodType: 'OT' }), favorites, boxscore);
-  assert.equal(result.body, 'Goal Scorer: 1 goal · Play Maker: 1 assist · Multi Point: 1 goal, 1 assist — 2-point game! · Hat Trick: 3 goals, 1 assist — hat trick! · MTL 2 @ TOR 4 (OT)');
+  const notification = buildNotification(game({ periodType: 'OT' }), favorites, boxscore);
+  assert.equal(notification.body, 'Goal Scorer: 1 goal · Play Maker: 1 assist · Multi Point: 1 goal, 1 assist — 2-point game! · Hat Trick: 3 goals, 1 assist — hat trick! · MTL 2 @ TOR 4 (OT)');
   assert.equal(buildNotification(game(), favorites).body, 'MTL 2 @ TOR 4');
   assert.equal(buildNotification(game(), [], boxscore).body, 'MTL 2 @ TOR 4');
 });
@@ -357,8 +367,8 @@ test('subscribe upserts by endpoint, seeds the ledger; unsubscribe removes only 
   assert.equal(ctx.db.subs[0].user_id, 8);
 
   // Seeded reports are never pushed.
-  const result = await dispatch(ctx);
-  assert.deepEqual(result, { users: 1, sent: 0, removed: 0 });
+  const dispatchSummary = await dispatch(ctx);
+  assert.deepEqual(dispatchSummary, { users: 1, sent: 0, removed: 0 });
   assert.equal(ctx.sent.length, 0);
 
   // Unsubscribe only deletes the caller's own row (user 8 owns it now).
@@ -407,13 +417,13 @@ test('push-mute route updates the favorite and favorites expose pushMuted', asyn
   assert.equal(muted.status, 200);
   assert.equal(muted.body.favorites[0].pushMuted, true);
 
-  const list = await request(ctx.favorites, '/api/favorites', {
+  const favoritesResponse = await request(ctx.favorites, '/api/favorites', {
     headers: authHeaders(),
   });
-  assert.equal(list.body.favorites[0].pushMuted, true);
+  assert.equal(favoritesResponse.body.favorites[0].pushMuted, true);
   const added = await put('/api/favorites/MTL', json({}));
   assert.equal(
-    added.body.favorites.find((f) => f.triCode === 'MTL').pushMuted,
+    added.body.favorites.find((favorite) => favorite.triCode === 'MTL').pushMuted,
     false,
   );
 });
@@ -522,21 +532,21 @@ test('dispatch skips read, ledgered, old and all-muted games, but not partly mut
     ],
   });
   await setupUser(ctx, 7, ['TOR', 'BOS']);
-  ctx.db.favorites.find((f) => f.team_tri_code === 'BOS').push_muted = true;
+  ctx.db.favorites.find((favorite) => favorite.team_tri_code === 'BOS').push_muted = true;
   ctx.db.reads.add('7:1');
   ctx.db.ledger.add('7:2');
 
-  const result = await dispatch(ctx);
-  assert.deepEqual(result, { users: 1, sent: 1, removed: 0 });
+  const dispatchSummary = await dispatch(ctx);
+  assert.deepEqual(dispatchSummary, { users: 1, sent: 1, removed: 0 });
   assert.deepEqual(
-    ctx.sent.map((s) => s.payload.gameId),
+    ctx.sent.map((sentPush) => sentPush.payload.gameId),
     [5],
   );
   assert.ok(ctx.db.ledger.has('7:5'));
   assert.ok(ctx.db.ledger.has('7:4'));
 
   // Unmuting later must not push the game that finished while muted.
-  ctx.db.favorites.find((f) => f.team_tri_code === 'BOS').push_muted = false;
+  ctx.db.favorites.find((favorite) => favorite.team_tri_code === 'BOS').push_muted = false;
   assert.deepEqual(await dispatch(ctx), { users: 1, sent: 0, removed: 0 });
 
   // A game pushes when at least one of its favorites is unmuted.
@@ -544,7 +554,7 @@ test('dispatch skips read, ledgered, old and all-muted games, but not partly mut
     games: [game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL' })],
   });
   await setupUser(partial, 7, ['TOR', 'MTL']);
-  partial.db.favorites.find((f) => f.team_tri_code === 'TOR').push_muted = true;
+  partial.db.favorites.find((favorite) => favorite.team_tri_code === 'TOR').push_muted = true;
 
   assert.equal((await dispatch(partial)).sent, 1);
   assert.equal(partial.sent.length, 1);
@@ -563,12 +573,12 @@ test('dispatch sends one push per game to every device with the contract payload
     [ENDPOINT, 'https://push.example.com/send/two'],
   );
 
-  const result = await dispatch(ctx);
-  assert.deepEqual(result, { users: 1, sent: 2, removed: 0 });
-  assert.deepEqual(ctx.sent.map((s) => s.subscription.endpoint).sort(), [
-    ENDPOINT,
-    'https://push.example.com/send/two',
-  ]);
+  const dispatchSummary = await dispatch(ctx);
+  assert.deepEqual(dispatchSummary, { users: 1, sent: 2, removed: 0 });
+  assert.deepEqual(
+    ctx.sent.map((sentPush) => sentPush.subscription.endpoint).sort(),
+    [ENDPOINT, 'https://push.example.com/send/two'],
+  );
   const { payload, options } = ctx.sent[0];
   assert.equal(payload.title, 'After Action Report');
   assert.equal(payload.body, 'MTL 2 @ TOR 4 (OT)');
@@ -607,15 +617,15 @@ test('dispatch removes subscriptions the push service reports gone', async () =>
   const errors = [];
   const original = console.error;
   console.error = (...args) => errors.push(args);
-  let result;
+  let dispatchSummary;
   try {
-    result = await dispatch(ctx);
+    dispatchSummary = await dispatch(ctx);
   } finally {
     console.error = original;
   }
-  assert.deepEqual(result, { users: 1, sent: 1, removed: 1 });
+  assert.deepEqual(dispatchSummary, { users: 1, sent: 1, removed: 1 });
   assert.equal(ctx.db.subs.length, 2);
-  assert.ok(!ctx.db.subs.some((s) => s.endpoint === gone));
+  assert.ok(!ctx.db.subs.some((subscription) => subscription.endpoint === gone));
   assert.equal(errors.length, 1);
 });
 
@@ -627,8 +637,8 @@ test('dispatch loads each distinct team schedule once, fresh', async () => {
   await setupUser(ctx, 8, ['TOR'], ['https://push.example.com/send/u8']);
   await setupUser(ctx, 9, ['MTL'], ['https://push.example.com/send/u9']);
 
-  const result = await dispatch(ctx);
-  assert.deepEqual(result, { users: 3, sent: 3, removed: 0 });
+  const dispatchSummary = await dispatch(ctx);
+  assert.deepEqual(dispatchSummary, { users: 3, sent: 3, removed: 0 });
   assert.deepEqual(ctx.scheduleCalls.season.sort(), ['MTL', 'TOR']);
   assert.deepEqual(ctx.scheduleCalls.recent.sort(), [
     ['MTL', true],

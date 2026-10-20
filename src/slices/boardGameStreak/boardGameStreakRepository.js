@@ -1,11 +1,12 @@
 const { toJsonParam } = require('#platform/jsonParam.js');
 
+/** Fetches the user's stored streak row, or null. */
 async function getStreak(client, userId) {
-  const result = await client.query(
+  const { rows: streakRows } = await client.query(
     'SELECT * FROM board_game_streaks WHERE user_id = $1',
     [userId],
   );
-  return result.rows[0] ?? null;
+  return streakRows[0] ?? null;
 }
 
 /**
@@ -13,7 +14,7 @@ async function getStreak(client, userId) {
  * `{ wins, lastWinDate }` values (merging happens in the service, not here).
  */
 async function upsertStreak(client, { userId, wins, lastWinDate }) {
-  const result = await client.query(
+  const { rows: upsertedStreakRows } = await client.query(
     `
 		INSERT INTO board_game_streaks (user_id, wins, last_win_date, updated_at)
 		VALUES ($1, $2, $3, now())
@@ -26,7 +27,7 @@ async function upsertStreak(client, { userId, wins, lastWinDate }) {
 		`,
     [userId, toJsonParam(wins), lastWinDate ?? null],
   );
-  return result.rows[0];
+  return upsertedStreakRows[0];
 }
 
 module.exports = {

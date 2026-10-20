@@ -89,8 +89,9 @@ async function upsertScheduleGames(client, games) {
   );
 }
 
+/** Lists a season's stored schedule games. */
 async function getScheduleGamesBySeason(client, seasonId) {
-  const result = await client.query(
+  const { rows: scheduleGameRows } = await client.query(
     `
 		SELECT to_jsonb(schedule_games) AS game
 		FROM schedule_games
@@ -99,7 +100,7 @@ async function getScheduleGamesBySeason(client, seasonId) {
 		`,
     [seasonId],
   );
-  return result.rows;
+  return scheduleGameRows;
 }
 
 module.exports = {

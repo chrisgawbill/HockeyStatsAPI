@@ -7,11 +7,11 @@ function notFoundHandler(req, res, next) {
 
 /** Single JSON error shape for every failed request. */
 // eslint-disable-next-line no-unused-vars
-function errorHandler(err, req, res, next) {
-  console.error(`${req.method} ${req.originalUrl} failed:`, err);
+function errorHandler(error, req, res, next) {
+  console.error(`${req.method} ${req.originalUrl} failed:`, error);
   res
-    .status(err.status || 500)
-    .json({ error: err.message ?? 'Internal server error' });
+    .status(error.status || 500)
+    .json({ error: error.message ?? 'Internal server error' });
 }
 
 module.exports = { notFoundHandler, errorHandler };

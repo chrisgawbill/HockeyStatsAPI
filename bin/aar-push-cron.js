@@ -26,20 +26,23 @@ function shouldDispatch(games, now = Date.now()) {
   });
 }
 
-function utcDate(ms) {
+/** Formats an epoch-millisecond timestamp as a UTC YYYY-MM-DD date. */
+function formatUtcDate(ms) {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
+/** Fetches the NHL scoreboard games for a UTC date. */
 async function fetchGames(date) {
   const response = await fetch(`https://api-web.nhle.com/v1/score/${date}`, {
     signal: AbortSignal.timeout(SCORE_TIMEOUT_MS),
   });
   if (!response.ok)
     throw new Error(`score ${date} responded ${response.status}`);
-  const data = await response.json();
-  return data.games ?? [];
+  const scoreboard = await response.json();
+  return scoreboard.games ?? [];
 }
 
+/** POSTs to the dispatch route, retrying once on network errors and 5xx responses. */
 async function callDispatch(baseUrl, secret) {
   const url = `${baseUrl.replace(/\/+$/, '')}/api/push/dispatch`;
   let lastError;
@@ -69,6 +72,7 @@ async function callDispatch(baseUrl, secret) {
   throw lastError;
 }
 
+/** Decides from the scoreboard whether to dispatch, then calls the API. */
 async function main() {
   const secret = process.env.CRON_SECRET;
   const apiUrl = process.env.AAR_PUSH_API_URL;
@@ -80,15 +84,15 @@ async function main() {
   }
 
   const now = Date.now();
-  const results = await Promise.allSettled([
-    fetchGames(utcDate(now)),
-    fetchGames(utcDate(now - 24 * 60 * 60 * 1000)),
+  const scoreboardResults = await Promise.allSettled([
+    fetchGames(formatUtcDate(now)),
+    fetchGames(formatUtcDate(now - 24 * 60 * 60 * 1000)),
   ]);
-  if (results.every((r) => r.status === 'rejected')) {
+  if (scoreboardResults.every(({ status }) => status === 'rejected')) {
     console.warn('Scoreboard unavailable; dispatching anyway.');
   } else {
-    const games = results.flatMap((r) =>
-      r.status === 'fulfilled' ? r.value : [],
+    const games = scoreboardResults.flatMap(({ status, value }) =>
+      status === 'fulfilled' ? value : [],
     );
     if (!shouldDispatch(games, now)) {
       console.log('No live or recently final games; skipping dispatch.');
@@ -96,8 +100,8 @@ async function main() {
     }
   }
 
-  const result = await callDispatch(apiUrl, secret);
-  console.log(JSON.stringify(result));
+  const dispatchSummary = await callDispatch(apiUrl, secret);
+  console.log(JSON.stringify(dispatchSummary));
 }
 
 if (require.main === module) {

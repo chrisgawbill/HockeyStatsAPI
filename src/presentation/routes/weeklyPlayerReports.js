@@ -16,8 +16,8 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
       res.send({
         favorites: await weeklyPlayerReportService.listFavorites(req.userId),
       });
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -29,8 +29,8 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
           req.params.playerId,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -42,8 +42,8 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
           req.params.playerId,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -63,8 +63,8 @@ function createWeeklyPlayerReportsRouter({ weeklyPlayerReportService }) {
   router.get('/', async (req, res, next) => {
     try {
       res.send(await weeklyPlayerReportService.listReports(req.userId));
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -76,8 +76,8 @@ function createWeeklyPlayerReportsRouter({ weeklyPlayerReportService }) {
           req.params.weekStart,
         ),
       );
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 
@@ -88,8 +88,8 @@ function createWeeklyPlayerReportsRouter({ weeklyPlayerReportService }) {
         req.params.weekStart,
       );
       res.status(204).end();
-    } catch (e) {
-      next(e);
+    } catch (error) {
+      next(error);
     }
   });
 

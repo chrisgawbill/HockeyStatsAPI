@@ -25,10 +25,10 @@ function fakeClient() {
 const teamSpec = {
   table: 'teams',
   columns: ['team_id', 'tri_code'],
-  keyFn: (t) => String(t.teamId),
+  keyFn: (team) => String(team.teamId),
   onConflict:
     'ON CONFLICT (team_id) DO UPDATE SET tri_code = EXCLUDED.tri_code',
-  toParams: (t) => [t.teamId, t.triCode],
+  toParams: (team) => [team.teamId, team.triCode],
 };
 
 test('chunk splits into batches of at most `size` and validates size', () => {
@@ -51,7 +51,7 @@ test('dedupeByKey keeps the last row per key in first-seen key order', () => {
     { id: 2, v: 'd' },
   ];
   assert.deepEqual(
-    dedupeByKey(rows, (r) => String(r.id)),
+    dedupeByKey(rows, (row) => String(row.id)),
     [
       { id: 3, v: 'c' },
       { id: 1, v: 'b' },
@@ -64,11 +64,11 @@ test('dedupeByKey keeps the last row per key in first-seen key order', () => {
     { season: '20252026', tri: 'COL', player: 2 },
     { season: '20252026', tri: 'COL', player: 1 },
   ];
-  const key = (r) => JSON.stringify([r.season, r.tri, r.player]);
+  const key = (row) => JSON.stringify([row.season, row.tri, row.player]);
   assert.equal(dedupeByKey(composite, key).length, 2);
   const unique = [{ id: 1 }, { id: 2 }];
   assert.deepEqual(
-    dedupeByKey(unique, (r) => String(r.id)),
+    dedupeByKey(unique, (row) => String(row.id)),
     unique,
   );
 });
