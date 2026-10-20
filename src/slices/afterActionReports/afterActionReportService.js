@@ -1,4 +1,8 @@
 const createError = require('http-errors');
+const {
+  DEFAULT_FAVORITE_TIER,
+  parseCategoryUpdate,
+} = require('#platform/favoriteCategory.js');
 const repository = require('#slices/afterActionReports/afterActionReportRepository.js');
 
 const TRI_CODE_PATTERN = /^[A-Z]{3}$/;
@@ -123,6 +127,8 @@ function mapFavoriteRow(favoriteRow) {
     triCode: favoriteRow.team_tri_code,
     since: new Date(favoriteRow.created_at).toISOString(),
     pushMuted: Boolean(favoriteRow.push_muted),
+    tier: favoriteRow.tier ?? DEFAULT_FAVORITE_TIER,
+    label: favoriteRow.label ?? null,
   };
 }
 
@@ -236,6 +242,21 @@ function createAfterActionReportService({
         }),
       );
       if (!updatedCount) throw createError(404, 'Team is not a favorite.');
+      return { favorites: await listFavorites(userId) };
+    },
+
+    /** Sets a favorite team's tier and/or label and returns the updated favorites; 404 when not a favorite. */
+    async updateCategory(userId, triCode, body) {
+      const validTriCode = parseTriCode(triCode);
+      const categoryChanges = parseCategoryUpdate(body);
+      const updatedRowCount = await withTransaction((client) =>
+        repository.updateFavoriteTeamCategory(client, {
+          userId,
+          triCode: validTriCode,
+          ...categoryChanges,
+        }),
+      );
+      if (!updatedRowCount) throw createError(404, 'Team is not a favorite.');
       return { favorites: await listFavorites(userId) };
     },
 

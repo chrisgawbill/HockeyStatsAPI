@@ -2,7 +2,7 @@
 async function listFavoritePlayers(client, userId) {
   const { rows: favoritePlayerRows } = await client.query(
     `
-		SELECT player_id, full_name, team_tri_code, position, headshot, created_at
+		SELECT player_id, full_name, team_tri_code, position, headshot, created_at, tier, label
 		FROM favorite_players
 		WHERE user_id = $1
 		ORDER BY created_at, player_id
@@ -16,7 +16,7 @@ async function listFavoritePlayers(client, userId) {
 async function listAllFavoritePlayers(client) {
   const { rows: allFavoritePlayerRows } = await client.query(
     `
-		SELECT user_id, player_id, full_name, team_tri_code, position, headshot, created_at
+		SELECT user_id, player_id, full_name, team_tri_code, position, headshot, created_at, tier, label
 		FROM favorite_players
 		ORDER BY user_id, created_at, player_id
 		`,
@@ -65,6 +65,23 @@ async function deleteFavoritePlayer(client, { userId, playerId }) {
     'DELETE FROM favorite_players WHERE user_id = $1 AND player_id = $2',
     [userId, playerId],
   );
+}
+
+/** Sets a favorite player's tier and/or label; returns the updated row count (0 when not a favorite). */
+async function updateFavoritePlayerCategory(
+  client,
+  { userId, playerId, changeTier, tier, changeLabel, label },
+) {
+  const { rowCount: updatedRowCount } = await client.query(
+    `
+		UPDATE favorite_players
+		SET tier = CASE WHEN $3::boolean THEN $4::text ELSE tier END,
+			label = CASE WHEN $5::boolean THEN $6::text ELSE label END
+		WHERE user_id = $1 AND player_id = $2
+		`,
+    [userId, playerId, changeTier, tier, changeLabel, label],
+  );
+  return updatedRowCount;
 }
 
 /** Lists a user's most recent reports, newest week first. */
@@ -143,6 +160,7 @@ module.exports = {
   listAllFavoritePlayers,
   insertFavoritePlayer,
   deleteFavoritePlayer,
+  updateFavoritePlayerCategory,
   listReports,
   getReport,
   insertReport,
