@@ -58,14 +58,67 @@ function parseSubscription(body) {
   return { endpoint, p256dh: keys.p256dh, auth: keys.auth };
 }
 
-function buildNotification(report) {
+function plural(count, word) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+/** One line for a player's night, or null when there is nothing to call out. */
+function describePlayerGame(name, stats) {
+  if (stats.isGoalie) {
+    return stats.decision === 'W' && stats.goalsAgainst === 0
+      ? `${name} posted a shutout`
+      : null;
+  }
+  const goals = Number(stats.goals) || 0;
+  const assists = Number(stats.assists) || 0;
+  const points = goals + assists;
+  if (points === 0) return null;
+  const parts = [goals > 0 && `${goals}G`, assists > 0 && `${assists}A`]
+    .filter(Boolean)
+    .join(', ');
+  if (goals >= 3) return `${name} had a hat trick (${parts})`;
+  if (points >= 2) return `${name} had a ${points}-point game (${parts})`;
+  return goals === 1 ? `${name} scored` : `${name} had an assist`;
+}
+
+/**
+ * Highlight lines for the user's favorite players in a gamecenter boxscore
+ * (goals, assists, multi-point games, hat tricks, goalie shutouts).
+ */
+function favoritePlayerHighlights(boxscore, favoritePlayers) {
+  const favoriteIds = new Set(favoritePlayers.map((p) => Number(p.playerId)));
+  const highlights = [];
+  for (const side of ['awayTeam', 'homeTeam']) {
+    const team = boxscore?.playerByGameStats?.[side] ?? {};
+    const groups = [
+      ...(team.forwards ?? []),
+      ...(team.defense ?? []),
+      ...(team.goalies ?? []).map((g) => ({ ...g, isGoalie: true })),
+    ];
+    for (const stats of groups) {
+      if (!favoriteIds.has(Number(stats.playerId))) continue;
+      const name =
+        stats.name?.default ??
+        favoritePlayers.find((p) => p.playerId === Number(stats.playerId))
+          ?.name;
+      const line = name && describePlayerGame(name, stats);
+      if (line) highlights.push(line);
+    }
+  }
+  return highlights;
+}
+
+function buildNotification(report, highlights = []) {
   const suffix =
     report.periodType === 'OT' || report.periodType === 'SO'
       ? ` (${report.periodType})`
       : '';
+  const score = `${report.awayTeam} ${report.awayScore} @ ${report.homeTeam} ${report.homeScore}${suffix}`;
   return {
     title: 'After Action Report',
-    body: `${report.awayTeam} ${report.awayScore} @ ${report.homeTeam} ${report.homeScore}${suffix}`,
+    body: highlights.length
+      ? `${score}\n${highlights.map((line) => `⭐ ${line}`).join('\n')}`
+      : score,
   };
 }
 
@@ -79,6 +132,7 @@ function buildNotification(report) {
  *   sessionJwt: typeof import('#platform/sessionJwt.js'),
  *   afterActionReportService: ReturnType<typeof import('#slices/afterActionReports/afterActionReportService.js').createAfterActionReportService>,
  *   weeklyPlayerReportService: ReturnType<typeof import('#slices/weeklyPlayerReports/weeklyPlayerReportService.js').createWeeklyPlayerReportService>,
+ *   scheduleService?: { getGameBoxscore: (gameId: number) => Promise<object> },
  *   webPush?: { sendNotification: Function },
  *   now?: () => number,
  * }} deps
@@ -88,6 +142,7 @@ function createPushNotificationService({
   sessionJwt,
   afterActionReportService,
   weeklyPlayerReportService,
+  scheduleService,
   webPush = require('web-push'),
   now = () => Date.now(),
 }) {
@@ -96,6 +151,28 @@ function createPushNotificationService({
     if (!vapid)
       throw createError(503, 'Push notifications are not configured.');
     return vapid;
+  }
+
+  /**
+   * Favorite-player lines for one game. Best effort: a missing boxscore or
+   * favorites lookup just sends the plain score.
+   */
+  async function highlightsFor(userId, report, cache) {
+    if (!scheduleService?.getGameBoxscore || !weeklyPlayerReportService)
+      return [];
+    try {
+      cache.favoritePlayers ??=
+        await weeklyPlayerReportService.listFavorites(userId);
+      if (cache.favoritePlayers.length === 0) return [];
+      const boxscore = await scheduleService.getGameBoxscore(report.gameId);
+      return favoritePlayerHighlights(boxscore, cache.favoritePlayers);
+    } catch (error) {
+      console.error(
+        `Favorite player highlights failed (user ${userId}, game ${report.gameId}):`,
+        error?.message ?? error,
+      );
+      return [];
+    }
   }
 
   async function sendToSubscription(subscription, payload, vapid) {
@@ -370,6 +447,7 @@ function createPushNotificationService({
       ),
     );
 
+    const highlightCache = {};
     for (const report of fresh) {
       if (alreadySent.has(report.gameId)) continue;
       // Claim before sending so concurrent dispatches cannot double send.
@@ -384,7 +462,10 @@ function createPushNotificationService({
       if (!claimed || !unmuted) continue;
 
       const payload = {
-        ...buildNotification(report),
+        ...buildNotification(
+          report,
+          await highlightsFor(userId, report, highlightCache),
+        ),
         gameId: report.gameId,
         tag: `aar-${report.gameId}`,
         readToken: sessionJwt.signReadToken({ userId, gameId: report.gameId }),
@@ -400,4 +481,4 @@ function createPushNotificationService({
   }
 }
 
-module.exports = { createPushNotificationService };
+module.exports = { createPushNotificationService, favoritePlayerHighlights };

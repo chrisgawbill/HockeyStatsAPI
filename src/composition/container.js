@@ -82,6 +82,7 @@ function createContainer(overrides = {}) {
     ...platform,
     afterActionReportService,
     weeklyPlayerReportService,
+    scheduleService,
   });
 
   return {

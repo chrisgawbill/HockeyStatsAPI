@@ -170,7 +170,7 @@ function fakeDb() {
   return db;
 }
 
-function build({ games, sendImpl } = {}) {
+function build({ games, sendImpl, boxscore, favoritePlayers } = {}) {
   const db = fakeDb();
   const scheduleCalls = { season: [], recent: [] };
   const gameList = games ?? [game({ gameId: 100 })];
@@ -204,6 +204,13 @@ function build({ games, sendImpl } = {}) {
     withTransaction: db.withTransaction,
     sessionJwt,
     afterActionReportService,
+    weeklyPlayerReportService: {
+      listFavorites: async () => favoritePlayers ?? [],
+    },
+    scheduleService: {
+      getGameBoxscore: async () =>
+        typeof boxscore === 'function' ? boxscore() : (boxscore ?? {}),
+    },
     webPush,
     now: () => NOW,
   });
@@ -528,6 +535,105 @@ test('dispatch sends one push per game to every device with the contract payload
   // A second dispatch sends nothing.
   assert.deepEqual(await dispatch(ctx), { users: 1, sent: 0, removed: 0 });
   assert.equal(ctx.sent.length, 2);
+});
+
+test('dispatch calls out favorite players who scored, assisted or shut out', async () => {
+  const skater = (playerId, name, goals, assists) => ({
+    playerId,
+    name: { default: name },
+    goals,
+    assists,
+  });
+  const ctx = build({
+    games: [game({ gameId: 9 })],
+    favoritePlayers: [1, 2, 3, 4, 5, 6].map((playerId) => ({ playerId })),
+    boxscore: {
+      playerByGameStats: {
+        awayTeam: {
+          forwards: [
+            skater(1, 'N. Suzuki', 1, 0),
+            skater(99, 'X. Other', 2, 0),
+          ],
+          defense: [skater(2, 'L. Hutson', 0, 1)],
+          goalies: [
+            {
+              playerId: 6,
+              name: { default: 'S. Montembeault' },
+              decision: 'L',
+              goalsAgainst: 4,
+            },
+          ],
+        },
+        homeTeam: {
+          forwards: [
+            skater(3, 'A. Matthews', 3, 1),
+            skater(4, 'M. Marner', 1, 2),
+          ],
+          defense: [skater(5, 'M. Rielly', 0, 0)],
+          goalies: [
+            {
+              playerId: 7,
+              name: { default: 'J. Woll' },
+              decision: 'W',
+              goalsAgainst: 0,
+            },
+          ],
+        },
+      },
+    },
+  });
+  await setupUser(ctx, 7, ['TOR']);
+  await dispatch(ctx);
+  assert.equal(
+    ctx.sent[0].payload.body,
+    [
+      'MTL 2 @ TOR 4',
+      '⭐ N. Suzuki scored',
+      '⭐ L. Hutson had an assist',
+      '⭐ A. Matthews had a hat trick (3G, 1A)',
+      '⭐ M. Marner had a 3-point game (1G, 2A)',
+    ].join('\n'),
+  );
+
+  const {
+    favoritePlayerHighlights,
+  } = require('#slices/pushNotifications/pushNotificationService.js');
+  const shutout = {
+    playerByGameStats: {
+      homeTeam: {
+        goalies: [
+          {
+            playerId: 7,
+            name: { default: 'J. Woll' },
+            decision: 'W',
+            goalsAgainst: 0,
+          },
+        ],
+      },
+    },
+  };
+  assert.deepEqual(favoritePlayerHighlights(shutout, [{ playerId: 7 }]), [
+    'J. Woll posted a shutout',
+  ]);
+});
+
+test('dispatch still sends the plain score when the boxscore fails', async () => {
+  const ctx = build({
+    games: [game({ gameId: 9 })],
+    favoritePlayers: [{ playerId: 1 }],
+    boxscore: () => {
+      throw new Error('NHL down');
+    },
+  });
+  await setupUser(ctx, 7, ['TOR']);
+  const original = console.error;
+  console.error = () => {};
+  try {
+    await dispatch(ctx);
+  } finally {
+    console.error = original;
+  }
+  assert.equal(ctx.sent[0].payload.body, 'MTL 2 @ TOR 4');
 });
 
 test('dispatch removes subscriptions the push service reports gone', async () => {
