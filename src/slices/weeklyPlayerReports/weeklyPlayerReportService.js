@@ -1,5 +1,9 @@
 const crypto = require('crypto');
 const createError = require('http-errors');
+const {
+  DEFAULT_FAVORITE_TIER,
+  parseCategoryUpdate,
+} = require('#platform/favoriteCategory.js');
 const { chunk } = require('#platform/batchSql.js');
 const repository = require('#slices/weeklyPlayerReports/weeklyPlayerReportRepository.js');
 const {
@@ -43,6 +47,8 @@ function mapFavoriteRow(favoriteRow) {
     position: favoriteRow.position ?? null,
     headshot: favoriteRow.headshot ?? null,
     since: new Date(favoriteRow.created_at).toISOString(),
+    tier: favoriteRow.tier ?? DEFAULT_FAVORITE_TIER,
+    label: favoriteRow.label ?? null,
   };
 }
 
@@ -307,6 +313,21 @@ function createWeeklyPlayerReportService({ withTransaction, nhlApi, cache }) {
           `You can favorite at most ${MAX_FAVORITE_PLAYERS} players.`,
         );
       }
+      return { favorites: await listFavorites(userId) };
+    },
+
+    /** Sets a favorite player's tier and/or label and returns the updated favorites; 404 when not a favorite. */
+    async updateCategory(userId, playerId, body) {
+      const parsedPlayerId = parsePlayerId(playerId);
+      const categoryChanges = parseCategoryUpdate(body);
+      const updatedRowCount = await withTransaction((client) =>
+        repository.updateFavoritePlayerCategory(client, {
+          userId,
+          playerId: parsedPlayerId,
+          ...categoryChanges,
+        }),
+      );
+      if (!updatedRowCount) throw createError(404, 'Player is not a favorite.');
       return { favorites: await listFavorites(userId) };
     },
 

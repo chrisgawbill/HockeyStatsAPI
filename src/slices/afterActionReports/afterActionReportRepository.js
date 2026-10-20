@@ -2,7 +2,7 @@
 async function listFavoriteTeams(client, userId) {
   const { rows: favoriteTeamRows } = await client.query(
     `
-		SELECT team_tri_code, created_at, push_muted
+		SELECT team_tri_code, created_at, push_muted, tier, label
 		FROM favorite_teams
 		WHERE user_id = $1
 		ORDER BY created_at, team_tri_code
@@ -59,7 +59,7 @@ async function insertReadGameIds(client, { userId, gameIds }) {
   );
 }
 
-/** Returns how many favorite rows were updated (0 when not a favorite). */
+/** Sets a favorite team's tier and/or label; returns the updated row count (0 when not a favorite). */
 async function updateFavoritePushMuted(client, { userId, triCode, muted }) {
   const { rowCount: updatedCount } = await client.query(
     `
@@ -72,7 +72,25 @@ async function updateFavoritePushMuted(client, { userId, triCode, muted }) {
   return updatedCount;
 }
 
+/** Sets a favorite team's tier and/or label; returns the updated row count (0 when not a favorite). */
+async function updateFavoriteTeamCategory(
+  client,
+  { userId, triCode, changeTier, tier, changeLabel, label },
+) {
+  const { rowCount: updatedRowCount } = await client.query(
+    `
+		UPDATE favorite_teams
+		SET tier = CASE WHEN $3::boolean THEN $4::text ELSE tier END,
+			label = CASE WHEN $5::boolean THEN $6::text ELSE label END
+		WHERE user_id = $1 AND team_tri_code = $2
+		`,
+    [userId, triCode, changeTier, tier, changeLabel, label],
+  );
+  return updatedRowCount;
+}
+
 module.exports = {
+  updateFavoriteTeamCategory,
   updateFavoritePushMuted,
   listFavoriteTeams,
   insertFavoriteTeam,
