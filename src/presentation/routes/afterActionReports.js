@@ -3,7 +3,8 @@ const { requireAuth } = require('#presentation/middleware/requireAuth.js');
 
 /**
  * Favorite teams, behind requireAuth:
- *   GET    /api/favorites            -> { favorites: [{ triCode, since, pushMuted }] }
+ *   GET    /api/favorites            -> { favorites: [{ triCode, since, pushMuted, tier, label }] }
+ *   PATCH  /api/favorites/:triCode   body { tier?, label? } -> { favorites }
  *   PUT    /api/favorites/:triCode   -> { favorites }
  *   DELETE /api/favorites/:triCode   -> { favorites }
  *   PUT    /api/favorites/:triCode/push-mute  body { muted } -> { favorites }
@@ -28,6 +29,20 @@ function createFavoritesRouter({ afterActionReportService }) {
         await afterActionReportService.addFavorite(
           req.userId,
           req.params.triCode,
+        ),
+      );
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  router.patch('/:triCode', async (req, res, next) => {
+    try {
+      res.send(
+        await afterActionReportService.updateCategory(
+          req.userId,
+          req.params.triCode,
+          req.body,
         ),
       );
     } catch (e) {

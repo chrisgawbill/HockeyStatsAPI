@@ -167,7 +167,19 @@ function fakeDb() {
           position,
           headshot,
           created_at: new Date(Date.UTC(2026, 9, 1, 0, db.clock)),
+          tier: 'fan',
+          label: null,
         });
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes('UPDATE favorite_players') && sql.includes('tier =')) {
+        const [user_id, player_id, setTier, tier, setLabel, label] = params;
+        const row = db.favorites.find(
+          (f) => f.user_id === user_id && f.player_id === String(player_id),
+        );
+        if (!row) return { rows: [], rowCount: 0 };
+        if (setTier) row.tier = tier;
+        if (setLabel) row.label = label;
         return { rows: [], rowCount: 1 };
       }
       if (sql.includes('DELETE FROM favorite_players')) {
@@ -622,6 +634,8 @@ test('favorite players: add, list, remove, validation, auth, and the cap of 10',
       position: 'C',
       headshot: `https://assets.example/${MCDAVID}.png`,
       since: added.body.favorites[0].since,
+      tier: 'fan',
+      label: null,
     },
   ]);
   assert.equal((await favorite(ctx, 7, 'abc')).status, 400);
@@ -651,6 +665,80 @@ test('favorite players: add, list, remove, validation, auth, and the cap of 10',
     ctx.calls.nhl.filter((u) => u === '/player/9000001/landing').length,
     1,
   );
+});
+
+test('favorite players: PATCH edits tier/label, validates, 404s, and re-PUT keeps them', async () => {
+  const ctx = build();
+  const patch = (userId, playerId, body) =>
+    request(ctx.favorites, `/api/favorite-players/${playerId}`, {
+      method: 'PATCH',
+      headers: {
+        ...auth(userId),
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(json(body))),
+      },
+      body: json(body),
+    });
+  const get = async () =>
+    (
+      await request(ctx.favorites, '/api/favorite-players', {
+        headers: auth(7),
+      })
+    ).body;
+
+  assert.equal(
+    (
+      await request(ctx.favorites, `/api/favorite-players/${MCDAVID}`, {
+        method: 'PATCH',
+      })
+    ).status,
+    401,
+  );
+  await favorite(ctx, 7, MCDAVID);
+
+  const tierOnly = await patch(7, MCDAVID, { tier: 'diehard' });
+  assert.equal(tierOnly.status, 200);
+  assert.deepEqual(Object.keys(tierOnly.body), ['favorites']);
+  assert.deepEqual(
+    [tierOnly.body.favorites[0].tier, tierOnly.body.favorites[0].label],
+    ['diehard', null],
+  );
+  assert.deepEqual(await get(), tierOnly.body);
+
+  const labelOnly = await patch(7, MCDAVID, { label: '  Captain  ' });
+  assert.deepEqual(
+    [labelOnly.body.favorites[0].tier, labelOnly.body.favorites[0].label],
+    ['diehard', 'Captain'],
+  );
+  const emoji = await patch(7, MCDAVID, { label: '\u{1F525}\u2764\uFE0F' });
+  assert.equal(emoji.body.favorites[0].label, '\u{1F525}\u2764\uFE0F');
+  const max = '\u2764\uFE0F'.repeat(24);
+  assert.equal((await patch(7, MCDAVID, { label: max })).status, 200);
+
+  // Re-PUT refreshes profile fields but keeps tier and label.
+  const reput = await favorite(ctx, 7, MCDAVID);
+  assert.deepEqual(
+    [reput.body.favorites[0].tier, reput.body.favorites[0].label],
+    ['diehard', max],
+  );
+
+  for (const clear of [{ label: null }, { label: '' }, { label: '   ' }]) {
+    await patch(7, MCDAVID, { label: 'x' });
+    const cleared = await patch(7, MCDAVID, clear);
+    assert.equal(cleared.body.favorites[0].label, null);
+    assert.equal(cleared.body.favorites[0].tier, 'diehard');
+  }
+
+  assert.equal((await patch(7, MCDAVID, { tier: 'ultra' })).status, 400);
+  assert.equal((await patch(7, MCDAVID, { label: 'a'.repeat(25) })).status, 400);
+  assert.equal(
+    (await patch(7, MCDAVID, { label: '\u2764\uFE0F'.repeat(25) })).status,
+    400,
+  );
+  assert.equal((await patch(7, MCDAVID, {})).status, 400);
+  assert.equal((await patch(7, 'abc', { tier: 'fan' })).status, 400);
+  assert.equal((await patch(7, SKINNER, { tier: 'fan' })).status, 404);
+  assert.equal((await patch(8, MCDAVID, { tier: 'fan' })).status, 404);
 });
 
 // --- Dispatch --------------------------------------------------------------

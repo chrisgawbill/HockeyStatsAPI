@@ -1,7 +1,7 @@
 async function listFavoriteTeams(client, userId) {
   const result = await client.query(
     `
-		SELECT team_tri_code, created_at, push_muted
+		SELECT team_tri_code, created_at, push_muted, tier, label
 		FROM favorite_teams
 		WHERE user_id = $1
 		ORDER BY created_at, team_tri_code
@@ -69,7 +69,25 @@ async function updateFavoritePushMuted(client, { userId, triCode, muted }) {
   return result.rowCount;
 }
 
+/** Returns how many favorite rows were updated (0 when not a favorite). */
+async function updateFavoriteTeamCategory(
+  client,
+  { userId, triCode, setTier, tier, setLabel, label },
+) {
+  const result = await client.query(
+    `
+		UPDATE favorite_teams
+		SET tier = CASE WHEN $3::boolean THEN $4::text ELSE tier END,
+			label = CASE WHEN $5::boolean THEN $6::text ELSE label END
+		WHERE user_id = $1 AND team_tri_code = $2
+		`,
+    [userId, triCode, setTier, tier, setLabel, label],
+  );
+  return result.rowCount;
+}
+
 module.exports = {
+  updateFavoriteTeamCategory,
   updateFavoritePushMuted,
   listFavoriteTeams,
   insertFavoriteTeam,

@@ -1,7 +1,7 @@
 async function listFavoritePlayers(client, userId) {
   const result = await client.query(
     `
-		SELECT player_id, full_name, team_tri_code, position, headshot, created_at
+		SELECT player_id, full_name, team_tri_code, position, headshot, created_at, tier, label
 		FROM favorite_players
 		WHERE user_id = $1
 		ORDER BY created_at, player_id
@@ -15,7 +15,7 @@ async function listFavoritePlayers(client, userId) {
 async function listAllFavoritePlayers(client) {
   const result = await client.query(
     `
-		SELECT user_id, player_id, full_name, team_tri_code, position, headshot, created_at
+		SELECT user_id, player_id, full_name, team_tri_code, position, headshot, created_at, tier, label
 		FROM favorite_players
 		ORDER BY user_id, created_at, player_id
 		`,
@@ -63,6 +63,23 @@ async function deleteFavoritePlayer(client, { userId, playerId }) {
     'DELETE FROM favorite_players WHERE user_id = $1 AND player_id = $2',
     [userId, playerId],
   );
+}
+
+/** Returns how many favorite rows were updated (0 when not a favorite). */
+async function updateFavoritePlayerCategory(
+  client,
+  { userId, playerId, setTier, tier, setLabel, label },
+) {
+  const result = await client.query(
+    `
+		UPDATE favorite_players
+		SET tier = CASE WHEN $3::boolean THEN $4::text ELSE tier END,
+			label = CASE WHEN $5::boolean THEN $6::text ELSE label END
+		WHERE user_id = $1 AND player_id = $2
+		`,
+    [userId, playerId, setTier, tier, setLabel, label],
+  );
+  return result.rowCount;
 }
 
 async function listReports(client, { userId, limit }) {
@@ -139,6 +156,7 @@ module.exports = {
   listAllFavoritePlayers,
   insertFavoritePlayer,
   deleteFavoritePlayer,
+  updateFavoritePlayerCategory,
   listReports,
   getReport,
   insertReport,

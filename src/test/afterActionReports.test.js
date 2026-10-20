@@ -149,6 +149,8 @@ function fakeStore() {
             user_id: params[0],
             team_tri_code: params[1],
             created_at: '2026-10-10T12:00:00.000Z',
+            tier: 'fan',
+            label: null,
           });
         }
         return { rows: [] };
@@ -159,6 +161,16 @@ function fakeStore() {
         );
         if (index >= 0) favorites.splice(index, 1);
         return { rows: [] };
+      }
+      if (sql.includes('UPDATE favorite_teams') && sql.includes('tier =')) {
+        const [user_id, tri, setTier, tier, setLabel, label] = params;
+        const row = favorites.find(
+          (f) => f.user_id === user_id && f.team_tri_code === tri,
+        );
+        if (!row) return { rows: [], rowCount: 0 };
+        if (setTier) row.tier = tier;
+        if (setLabel) row.label = label;
+        return { rows: [], rowCount: 1 };
       }
       if (sql.includes('SELECT game_id')) {
         return {
@@ -359,3 +371,122 @@ test('routes pass the session user through to the service', async () => {
   ]);
 });
 
+
+test('favorite teams default to fan, PATCH edits tier/label, and re-PUT keeps them', async () => {
+  const { service } = buildService();
+  const added = await service.addFavorite(7, 'TOR');
+  assert.equal(added.favorites[0].tier, 'fan');
+  assert.equal(added.favorites[0].label, null);
+  assert.equal(added.favorites[0].pushMuted, false);
+
+  const tierOnly = await service.updateCategory(7, 'tor', { tier: 'diehard' });
+  assert.deepEqual(
+    [tierOnly.favorites[0].tier, tierOnly.favorites[0].label],
+    ['diehard', null],
+  );
+  const labelOnly = await service.updateCategory(7, 'TOR', {
+    label: '  My West Coast team  ',
+  });
+  assert.deepEqual(
+    [labelOnly.favorites[0].tier, labelOnly.favorites[0].label],
+    ['diehard', 'My West Coast team'],
+  );
+  const emoji = await service.updateCategory(7, 'TOR', {
+    tier: 'curious',
+    label: '\u2764\uFE0F',
+  });
+  assert.deepEqual(
+    [emoji.favorites[0].tier, emoji.favorites[0].label],
+    ['curious', '\u2764\uFE0F'],
+  );
+  const exact = '\u2764\uFE0F'.repeat(24);
+  assert.equal(
+    (await service.updateCategory(7, 'TOR', { label: exact })).favorites[0]
+      .label,
+    exact,
+  );
+
+  const reput = await service.addFavorite(7, 'TOR');
+  assert.deepEqual(
+    [reput.favorites[0].tier, reput.favorites[0].label],
+    ['curious', exact],
+  );
+
+  for (const clear of [{ label: null }, { label: '   ' }, { label: '' }]) {
+    await service.updateCategory(7, 'TOR', { label: 'x' });
+    const cleared = await service.updateCategory(7, 'TOR', clear);
+    assert.equal(cleared.favorites[0].label, null);
+    assert.equal(cleared.favorites[0].tier, 'curious');
+  }
+});
+
+test('favorite team PATCH validation: 400 for bad input, 404 when not a favorite', async () => {
+  const { service } = buildService();
+  await service.addFavorite(7, 'TOR');
+  const bad = [
+    ['TOR', { tier: 'superfan' }],
+    ['TOR', { tier: null }],
+    ['TOR', { label: 'a'.repeat(25) }],
+    ['TOR', { label: '\u2764\uFE0F'.repeat(25) }],
+    ['TOR', { label: 5 }],
+    ['TOR', {}],
+    ['TOR', undefined],
+    ['TOR', []],
+    ['XX', { tier: 'fan' }],
+  ];
+  for (const [code, body] of bad) {
+    await assert.rejects(service.updateCategory(7, code, body), { status: 400 });
+  }
+  await assert.rejects(service.updateCategory(7, 'MTL', { tier: 'fan' }), {
+    status: 404,
+  });
+  await assert.rejects(service.updateCategory(8, 'TOR', { tier: 'fan' }), {
+    status: 404,
+  });
+});
+
+test('PATCH /api/favorites/:triCode requires a session and returns the full list', async () => {
+  const { service } = buildService();
+  const app = makeTestApp(
+    '/api/favorites',
+    createFavoritesRouter({ afterActionReportService: service }),
+  );
+  const headers = authHeaders(7);
+  const patch = (path, body) =>
+    request(app, path, {
+      method: 'PATCH',
+      headers: {
+        ...headers,
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(JSON.stringify(body))),
+      },
+      body: JSON.stringify(body),
+    });
+
+  assert.equal(
+    (await request(app, '/api/favorites/TOR', { method: 'PATCH' })).status,
+    401,
+  );
+  await request(app, '/api/favorites/TOR', { method: 'PUT', headers });
+
+  const ok = await patch('/api/favorites/TOR', { tier: 'diehard', label: 'Home' });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(Object.keys(ok.body), ['favorites']);
+  assert.deepEqual(ok.body.favorites[0], {
+    triCode: 'TOR',
+    since: '2026-10-10T12:00:00.000Z',
+    pushMuted: false,
+    tier: 'diehard',
+    label: 'Home',
+  });
+  const got = await request(app, '/api/favorites', { headers });
+  assert.deepEqual(got.body, ok.body);
+
+  assert.equal((await patch('/api/favorites/TOR', { tier: 'bad' })).status, 400);
+  assert.equal((await patch('/api/favorites/TOR', {})).status, 400);
+  assert.equal(
+    (await patch('/api/favorites/TOR', { label: 'a'.repeat(25) })).status,
+    400,
+  );
+  assert.equal((await patch('/api/favorites/MTL', { tier: 'fan' })).status, 404);
+});
