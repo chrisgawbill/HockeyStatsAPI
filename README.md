@@ -88,6 +88,9 @@ The dispatch fetches the league schedule for the week (`/schedule/{monday}`); if
 
 ## Deployment
 
+For deployment on this server through Jenkins and systemd, see
+[Jenkins setup](docs/jenkins.md).
+
 Recommended Render Web Service commands:
 
 - Build: `pnpm install --frozen-lockfile && python3 -m pip install -r requirements.txt`
