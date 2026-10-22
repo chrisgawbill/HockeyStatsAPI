@@ -19,15 +19,20 @@ function getAllowedRedirectUris() {
 }
 
 /**
- * Exchanges a Discord OAuth2 authorization code for an access token, then
- * fetches the signed-in Discord user. `redirectUri` must be the exact URI the
- * frontend sent the user to Discord with. The access token is used once here
- * and never stored or returned.
+ * Exchanges a Discord OAuth2 authorization code (with its PKCE code verifier)
+ * for an access token, then fetches the signed-in Discord user. `redirectUri`
+ * must be the exact URI the frontend sent the user to Discord with. The access
+ * token is used once here and never stored or returned.
  *
- * @param {{ code: string, redirectUri: string }} params
+ * @param {{ code: string, codeVerifier: string, redirectUri: string }} params
+ * @param {{ http?: { post: Function, get: Function } }} [options] HTTP client,
+ *   replaceable in tests.
  * @returns {Promise<{ id: string, email: string|null, verified: boolean }>}
  */
-async function verifyDiscordCode({ code, redirectUri }) {
+async function verifyDiscordCode(
+  { code, codeVerifier, redirectUri },
+  { http = axiosDiscord } = {},
+) {
   const clientId = process.env.DISCORD_CLIENT_ID;
   const clientSecret = process.env.DISCORD_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
@@ -36,19 +41,20 @@ async function verifyDiscordCode({ code, redirectUri }) {
     );
   }
 
-  const { data: tokenResponse } = await axiosDiscord.post(
+  const { data: tokenResponse } = await http.post(
     '/oauth2/token',
     new URLSearchParams({
       grant_type: 'authorization_code',
       code,
       redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
       client_id: clientId,
       client_secret: clientSecret,
     }),
     { headers: { 'content-type': 'application/x-www-form-urlencoded' } },
   );
 
-  const { data: discordUser } = await axiosDiscord.get('/users/@me', {
+  const { data: discordUser } = await http.get('/users/@me', {
     headers: { authorization: `Bearer ${tokenResponse.access_token}` },
   });
 

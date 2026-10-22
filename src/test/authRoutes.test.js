@@ -93,36 +93,91 @@ test('board-game /streak requires a session and passes req.userId to the service
   });
 });
 
-// --- Discord sign-in: the service against a fake Discord client and a fake
-// SQL client, and the route against a fake service.
+// --- Sign-in and account linking: the service against fake provider clients
+// and an in-memory fake of the users/user_identities tables, and the routes
+// against the real service or a fake one.
 
 const crypto = require('crypto');
 const emailCrypto = require('#platform/emailCrypto.js');
 const { createAuthService } = require('#slices/auth/authService.js');
 const { createAuthRouter } = require('#presentation/routes/auth.js');
+const { verifyDiscordCode } = require('#platform/discordAuthClient.js');
 const { jsonRequest } = require('./testApp.js');
 
 const ALLOWED_REDIRECT = 'http://localhost:5173/HockeyStatsWebApp/';
+const VERIFIER = 'a'.repeat(43);
 
 function setEmailKeys() {
   process.env.EMAIL_ENCRYPTION_KEY = crypto.randomBytes(32).toString('base64');
   process.env.EMAIL_LOOKUP_KEY = crypto.randomBytes(32).toString('base64');
 }
 
-function buildDiscordAuthService(discordUser) {
-  const queries = [];
+function uniqueViolation() {
+  return Object.assign(new Error('duplicate key'), { code: '23505' });
+}
+
+// Answers the repository's statements from in-memory rows, enforcing the
+// (provider, subject) and email_lookup unique indexes.
+function makeFakeDb() {
+  const users = [];
+  const identities = [];
+  const statements = [];
+  const client = {
+    async query(sql, params = []) {
+      statements.push(sql);
+      if (sql.includes('JOIN users')) {
+        const identity = identities.find(
+          (row) => row.provider === params[0] && row.subject === params[1],
+        );
+        return { rows: identity ? [users.find((u) => u.id === identity.user_id)] : [] };
+      }
+      if (sql.includes('UPDATE user_identities')) {
+        return { rows: [] };
+      }
+      if (sql.includes('WHERE email_lookup = $1')) {
+        return { rows: users.filter((u) => u.email_lookup === params[0]) };
+      }
+      if (sql.includes('INSERT INTO users')) {
+        if (params[1] && users.some((u) => u.email_lookup === params[1])) {
+          throw uniqueViolation();
+        }
+        const user = { id: users.length + 1, email_encrypted: params[0], email_lookup: params[1] };
+        users.push(user);
+        return { rows: [user] };
+      }
+      if (sql.includes('INSERT INTO user_identities')) {
+        if (identities.some((row) => row.provider === params[1] && row.subject === params[2])) {
+          throw uniqueViolation();
+        }
+        identities.push({ user_id: params[0], provider: params[1], subject: params[2] });
+        return { rows: [] };
+      }
+      if (sql.includes('UPDATE users')) {
+        const user = users.find((u) => u.id === params[0]);
+        Object.assign(user, { email_encrypted: params[1], email_lookup: params[2] });
+        return { rows: [user] };
+      }
+      if (sql.includes('WHERE id = $1')) {
+        return { rows: users.filter((u) => u.id === params[0]) };
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    },
+  };
+  return { users, identities, statements, client };
+}
+
+function buildAuthService({ db = makeFakeDb(), googlePayload, discordUser } = {}) {
   const discordCalls = [];
   const service = createAuthService({
-    withTransaction: (fn) =>
-      fn({
-        query: async (sql, params) => {
-          queries.push({ sql, params });
-          return {
-            rows: [{ id: 99, discord_id: params[0], email_encrypted: params[1] }],
-          };
-        },
-      }),
-    googleAuth: {},
+    withTransaction: (fn) => fn(db.client),
+    googleAuth: {
+      verifyGoogleIdToken: async () => {
+        if (googlePayload instanceof Error) {
+          throw googlePayload;
+        }
+        return googlePayload;
+      },
+    },
     emailCrypto,
     discordAuth: {
       getAllowedRedirectUris: () => [ALLOWED_REDIRECT],
@@ -136,76 +191,215 @@ function buildDiscordAuthService(discordUser) {
     },
     sessionJwt: { signSessionToken: ({ userId }) => `session-for-${userId}` },
   });
-  return { service, queries, discordCalls };
+  return { service, db, discordCalls };
 }
 
-test('signInWithDiscord upserts by Discord id with an encrypted email and issues a session token', async () => {
+const google = (db, payload) =>
+  buildAuthService({ db, googlePayload: payload }).service.signInWithGoogle('cred');
+const discord = (db, discordUser) =>
+  buildAuthService({ db, discordUser }).service.signInWithDiscord({
+    code: 'auth-code',
+    codeVerifier: VERIFIER,
+    redirectUri: ALLOWED_REDIRECT,
+  });
+
+test('verified Google and verified Discord with the same email share one account', async () => {
   setEmailKeys();
-  const { service, queries, discordCalls } = buildDiscordAuthService({
-    id: '123456',
-    email: 'fan@example.com',
-    verified: true,
+  const db = makeFakeDb();
+  const first = await google(db, { sub: 'g-1', email: 'Fan@Example.com', email_verified: true });
+  const second = await discord(db, { id: 'd-1', email: 'fan@example.com', verified: true });
+
+  assert.deepEqual(first, { token: 'session-for-1', email: 'Fan@Example.com' });
+  assert.equal(second.token, 'session-for-1');
+  assert.equal(db.users.length, 1);
+  assert.deepEqual(
+    db.identities.map(({ user_id, provider }) => [user_id, provider]),
+    [[1, 'google'], [1, 'discord']],
+  );
+  assert.ok(!db.users[0].email_encrypted.includes('example.com'));
+  assert.equal(db.users[0].email_lookup, emailCrypto.hashEmailForLookup('fan@example.com'));
+});
+
+test('an unverified Discord email is never stored or linked', async () => {
+  setEmailKeys();
+  const db = makeFakeDb();
+  await google(db, { sub: 'g-1', email: 'fan@example.com', email_verified: true });
+  const result = await discord(db, { id: 'd-1', email: 'fan@example.com', verified: false });
+
+  assert.deepEqual(result, { token: 'session-for-2', email: null });
+  assert.deepEqual(db.users[1], { id: 2, email_encrypted: null, email_lookup: null });
+});
+
+test('an unverified Google email gets a new account with no lookup that verified Discord cannot link to', async () => {
+  setEmailKeys();
+  const db = makeFakeDb();
+  const first = await google(db, { sub: 'g-1', email: 'fan@example.com', email_verified: false });
+  assert.equal(first.email, 'fan@example.com');
+  assert.equal(db.users[0].email_lookup, null);
+
+  const second = await discord(db, { id: 'd-1', email: 'fan@example.com', verified: true });
+  assert.equal(second.token, 'session-for-2');
+  assert.equal(db.users.length, 2);
+  assert.equal(db.users[1].email_lookup, emailCrypto.hashEmailForLookup('fan@example.com'));
+});
+
+test('a returning identity signs in as its own user and touches last_signed_in_at', async () => {
+  setEmailKeys();
+  const db = makeFakeDb();
+  await discord(db, { id: 'd-1', email: 'a@example.com', verified: true });
+  await google(db, { sub: 'g-1', email: 'b@example.com', email_verified: true });
+  db.statements.length = 0;
+
+  const again = await discord(db, { id: 'd-1', email: 'a@example.com', verified: true });
+  assert.deepEqual(again, { token: 'session-for-1', email: 'a@example.com' });
+  assert.ok(db.statements.some((sql) => sql.includes('SET last_signed_in_at = now()')));
+  assert.equal(db.users.length, 2);
+  assert.equal(db.identities.length, 2);
+});
+
+test('a verified email change updates the account unless another user holds that email', async () => {
+  setEmailKeys();
+  const db = makeFakeDb();
+  await google(db, { sub: 'g-1', email: 'old@example.com', email_verified: true });
+  await google(db, { sub: 'g-2', email: 'taken@example.com', email_verified: true });
+
+  const changed = await google(db, { sub: 'g-1', email: 'new@example.com', email_verified: true });
+  assert.equal(changed.email, 'new@example.com');
+  assert.equal(db.users[0].email_lookup, emailCrypto.hashEmailForLookup('new@example.com'));
+
+  const blocked = await google(db, { sub: 'g-1', email: 'taken@example.com', email_verified: true });
+  assert.equal(blocked.email, 'new@example.com');
+  assert.equal(blocked.token, 'session-for-1');
+
+  const unverified = await google(db, { sub: 'g-1', email: 'other@example.com', email_verified: false });
+  assert.equal(unverified.email, 'new@example.com');
+  assert.equal(db.users[0].email_lookup, emailCrypto.hashEmailForLookup('new@example.com'));
+});
+
+test('a unique-index race is retried once in a fresh transaction', async () => {
+  setEmailKeys();
+  const db = makeFakeDb();
+  let attempts = 0;
+  const service = createAuthService({
+    withTransaction: (fn) => {
+      attempts += 1;
+      return fn(db.client);
+    },
+    googleAuth: {},
+    emailCrypto,
+    discordAuth: {
+      getAllowedRedirectUris: () => [ALLOWED_REDIRECT],
+      verifyDiscordCode: async () => ({ id: 'd-1', email: null, verified: false }),
+    },
+    sessionJwt: { signSessionToken: ({ userId }) => `session-for-${userId}` },
   });
+  // The first attempt sees no identity, then a concurrent sign-in for the
+  // same identity commits before its insert hits the unique index.
+  const original = db.client.query;
+  let firstLookup = true;
+  db.client.query = async (sql, params) => {
+    if (firstLookup && sql.includes('JOIN users')) {
+      firstLookup = false;
+      db.users.push({ id: 7, email_encrypted: null, email_lookup: null });
+      db.identities.push({ user_id: 7, provider: 'discord', subject: 'd-1' });
+      return { rows: [] };
+    }
+    return original(sql, params);
+  };
 
   const result = await service.signInWithDiscord({
     code: 'auth-code',
+    codeVerifier: VERIFIER,
     redirectUri: ALLOWED_REDIRECT,
   });
-
-  assert.deepEqual(result, { token: 'session-for-99', email: 'fan@example.com' });
-  assert.deepEqual(discordCalls, [
-    { code: 'auth-code', redirectUri: ALLOWED_REDIRECT },
-  ]);
-  assert.match(queries[0].sql, /ON CONFLICT \(discord_id\)/);
-  const [discordId, emailEncrypted, emailLookup] = queries[0].params;
-  assert.equal(discordId, '123456');
-  assert.ok(!emailEncrypted.includes('fan@example.com'));
-  assert.equal(emailCrypto.decryptEmail(emailEncrypted), 'fan@example.com');
-  assert.equal(emailLookup, emailCrypto.hashEmailForLookup('fan@example.com'));
+  assert.equal(attempts, 2);
+  assert.equal(result.token, 'session-for-7');
 });
 
-test('signInWithDiscord drops an email Discord has not verified', async () => {
-  const { service, queries } = buildDiscordAuthService({
-    id: '123456',
-    email: 'unverified@example.com',
-    verified: false,
-  });
-
-  const result = await service.signInWithDiscord({
-    code: 'auth-code',
-    redirectUri: ALLOWED_REDIRECT,
-  });
-
-  assert.equal(result.email, null);
-  assert.deepEqual(queries[0].params, ['123456', null, null]);
-});
-
-test('signInWithDiscord rejects a missing code or an unlisted redirectUri before calling Discord', async () => {
-  const { service, discordCalls } = buildDiscordAuthService({ id: '1' });
+test('signInWithDiscord rejects a missing code, bad codeVerifier or unlisted redirectUri before calling Discord', async () => {
+  const { service, discordCalls } = buildAuthService({ discordUser: { id: '1' } });
 
   for (const params of [
-    { redirectUri: ALLOWED_REDIRECT },
-    { code: 'auth-code' },
-    { code: 'auth-code', redirectUri: 'https://evil.example/' },
+    { codeVerifier: VERIFIER, redirectUri: ALLOWED_REDIRECT },
+    { code: 'auth-code', codeVerifier: VERIFIER },
+    { code: 'auth-code', codeVerifier: VERIFIER, redirectUri: 'https://evil.example/' },
   ]) {
     await assert.rejects(service.signInWithDiscord(params), { status: 400 });
   }
+  for (const codeVerifier of [undefined, 'a'.repeat(42), 'a'.repeat(129), `${'a'.repeat(42)}+`, 42]) {
+    await assert.rejects(
+      service.signInWithDiscord({ code: 'auth-code', codeVerifier, redirectUri: ALLOWED_REDIRECT }),
+      { status: 400, message: 'codeVerifier is required.' },
+    );
+  }
   assert.equal(discordCalls.length, 0);
+
+  await service.signInWithDiscord({
+    code: 'auth-code',
+    codeVerifier: 'Az09-._~'.repeat(16),
+    redirectUri: ALLOWED_REDIRECT,
+  });
+  assert.deepEqual(discordCalls, [
+    { code: 'auth-code', codeVerifier: 'Az09-._~'.repeat(16), redirectUri: ALLOWED_REDIRECT },
+  ]);
 });
 
-test('signInWithDiscord returns 401 when Discord rejects the code', async () => {
-  const { service, queries } = buildDiscordAuthService(
-    new Error('invalid_grant'),
-  );
+test('verifyDiscordCode sends code_verifier in the token exchange', async () => {
+  process.env.DISCORD_CLIENT_ID = 'client-id';
+  process.env.DISCORD_CLIENT_SECRET = 'client-secret';
+  const posts = [];
+  const http = {
+    post: async (url, body) => {
+      posts.push({ url, body: Object.fromEntries(body) });
+      return { data: { access_token: 'access' } };
+    },
+    get: async (url, { headers }) => {
+      assert.equal(headers.authorization, 'Bearer access');
+      return { data: { id: 'd-1', email: 'fan@example.com', verified: true } };
+    },
+  };
 
-  await assert.rejects(
-    service.signInWithDiscord({ code: 'bad', redirectUri: ALLOWED_REDIRECT }),
-    { status: 401 },
+  const discordUser = await verifyDiscordCode(
+    { code: 'auth-code', codeVerifier: VERIFIER, redirectUri: ALLOWED_REDIRECT },
+    { http },
   );
-  assert.equal(queries.length, 0);
+  assert.deepEqual(discordUser, { id: 'd-1', email: 'fan@example.com', verified: true });
+  assert.equal(posts[0].url, '/oauth2/token');
+  assert.equal(posts[0].body.code_verifier, VERIFIER);
+  assert.equal(posts[0].body.grant_type, 'authorization_code');
+  assert.equal(posts[0].body.redirect_uri, ALLOWED_REDIRECT);
 });
 
-test('POST /api/auth/discord passes code and redirectUri to the service', async () => {
+test('sign-in failures return fixed 401 messages that never echo the provider error', async () => {
+  const leaky = new Error('token for leaked@example.com rejected');
+  leaky.response = { status: 400, data: { email: 'leaked@example.com' } };
+  const { service, db } = buildAuthService({ googlePayload: leaky, discordUser: leaky });
+  const app = makeTestApp('/api/auth', createAuthRouter({ authService: service }));
+  const logged = [];
+  const originalError = console.error;
+  console.error = (...args) => logged.push(args.join(' '));
+  try {
+    const googleResponse = await jsonRequest(app, '/api/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ credential: 'bad' }),
+    });
+    const discordResponse = await jsonRequest(app, '/api/auth/discord', {
+      method: 'POST',
+      body: JSON.stringify({ code: 'bad', codeVerifier: VERIFIER, redirectUri: ALLOWED_REDIRECT }),
+    });
+
+    assert.equal(googleResponse.status, 401);
+    assert.deepEqual(googleResponse.body, { error: 'Invalid Google credential.' });
+    assert.equal(discordResponse.status, 401);
+    assert.deepEqual(discordResponse.body, { error: 'Invalid Discord authorization.' });
+    assert.deepEqual(logged, ['Discord sign-in failed: 400']);
+    assert.equal(db.statements.length, 0);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+test('POST /api/auth/discord passes code, codeVerifier and redirectUri to the service', async () => {
   let calledWith = null;
   const app = makeTestApp(
     '/api/auth',
@@ -221,13 +415,14 @@ test('POST /api/auth/discord passes code and redirectUri to the service', async 
 
   const response = await jsonRequest(app, '/api/auth/discord', {
     method: 'POST',
-    body: JSON.stringify({ code: 'auth-code', redirectUri: ALLOWED_REDIRECT }),
+    body: JSON.stringify({ code: 'auth-code', codeVerifier: VERIFIER, redirectUri: ALLOWED_REDIRECT }),
   });
 
   assert.equal(response.status, 200);
   assert.deepEqual(response.body, { token: 'session-token', email: null });
   assert.deepEqual(calledWith, {
     code: 'auth-code',
+    codeVerifier: VERIFIER,
     redirectUri: ALLOWED_REDIRECT,
   });
 });
@@ -278,26 +473,4 @@ test('email crypto fails loudly on a missing or wrong-length key', () => {
     emailEncrypted: null,
     emailLookup: null,
   });
-});
-
-test('encryptStoredEmails encrypts plaintext rows and clears the plaintext', async () => {
-  setEmailKeys();
-  const { encryptStoredEmails } = require('#platform/encryptStoredEmails.js');
-  const calls = [];
-  const client = {
-    query: async (sql, params) => {
-      calls.push({ sql, params });
-      if (sql.startsWith('SELECT')) {
-        return { rows: [{ id: 1, email: 'fan@example.com' }] };
-      }
-      return { rows: [] };
-    },
-  };
-
-  assert.equal(await encryptStoredEmails(client, { log: () => {} }), 1);
-  const update = calls.find(({ sql }) => sql.startsWith('UPDATE'));
-  assert.match(update.sql, /email = NULL/);
-  assert.equal(update.params[0], 1);
-  assert.equal(emailCrypto.decryptEmail(update.params[1]), 'fan@example.com');
-  assert.equal(calls.at(-1).sql, 'COMMIT');
 });

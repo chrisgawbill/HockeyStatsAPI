@@ -31,20 +31,27 @@ async function getAppliedMigrations(client) {
   return new Set(appliedRows.map((appliedRow) => appliedRow.filename));
 }
 
-/** Lists the .sql migration filenames in a directory, in application order. */
+/**
+ * Lists the migration filenames (`.sql`, or `.js` modules exporting
+ * `async up(client)`) in a directory, in application order.
+ */
 function getMigrationFiles(migrationsDir) {
   return fs
     .readdirSync(migrationsDir)
-    .filter((filename) => filename.endsWith('.sql'))
+    .filter((filename) => filename.endsWith('.sql') || filename.endsWith('.js'))
     .sort();
 }
 
 /** Runs one migration file and records it, all in a single transaction. */
 async function runMigration(client, migrationsDir, filename, log) {
-  const sql = fs.readFileSync(path.join(migrationsDir, filename), 'utf-8');
+  const migrationPath = path.join(migrationsDir, filename);
   await client.query('BEGIN');
   try {
-    await client.query(sql);
+    if (filename.endsWith('.js')) {
+      await require(migrationPath).up(client);
+    } else {
+      await client.query(fs.readFileSync(migrationPath, 'utf-8'));
+    }
     await client.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [
       filename,
     ]);

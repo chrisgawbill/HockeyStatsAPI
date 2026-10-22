@@ -25,7 +25,11 @@ pnpm run db:migrate
 
 Pending migrations also run automatically on `pnpm start`, before the server listens. When `CACHE_DATABASE_URL` is unset (filesystem-cache mode) the step is skipped; if a migration fails, the process exits non-zero and the server does not start. A Postgres advisory lock keeps concurrent instances from applying the same migration twice, and the connection uses the same SSL settings as the app (`DATABASE_CA_CERT` is required when SSL is on). `pnpm run db:migrate` still works for manual runs and fails if `CACHE_DATABASE_URL` is missing.
 
-After migrations, `pnpm start` also encrypts any plaintext `users.email` left from before migration 008 (`src/platform/encryptStoredEmails.js`, also runnable as `pnpm run db:encrypt-emails`). It needs `EMAIL_ENCRYPTION_KEY` and `EMAIL_LOOKUP_KEY` only when such rows exist, and does nothing once every row is encrypted.
+Migrations live in `src/platform/migrations` and run in filename order. Each is either a `.sql` file or a `.js` module exporting `async up(client)`; both run inside one transaction together with their `schema_migrations` row, so a failure leaves nothing applied.
+
+Migration 009 (`009_add_user_identities.js`) moves sign-in identities into `user_identities` (`provider` `google`/`discord`, `subject`, unique per pair) and drops `users.google_sub`, `users.discord_id` and the plaintext `users.email`. User ids do not change, so favorites, push subscriptions, streaks and reports stay attached. It also encrypts any plaintext email still left from before migration 008 (this replaces the old start-up `db:encrypt-emails` step, which is gone); `EMAIL_ENCRYPTION_KEY` and `EMAIL_LOOKUP_KEY` are needed only when such rows exist, and the migration fails naming those variables otherwise. `email_lookup` becomes unique: where several users share one, the lowest user id keeps it and the others keep only their encrypted email (no accounts are merged).
+
+To roll back 009: take a `pg_dump` before deploying it. If needed, run `node bin/rollback-009.js` (same `.env`, `CACHE_DATABASE_URL` and SSL settings as `db:migrate`; needs `EMAIL_ENCRYPTION_KEY` when emails are stored). In one transaction it restores `google_sub`, `discord_id` and plaintext `email` (decrypted) with their old constraints and index, drops `user_identities` and removes 009 from `schema_migrations`. Then revert the change on `main` and redeploy; otherwise the next start re-applies 009. A user who linked two identities of one provider keeps the oldest, and lookups cleared by 009 stay empty; restore the dump if that matters.
 
 `DATABASE_URL` is used for normalized domain persistence when set; otherwise the service falls back to `CACHE_DATABASE_URL`. See `.env.example` for cache, database, AI, diagnostics, CORS-related deployment, and Google auth configuration.
 
@@ -44,9 +48,21 @@ After Action Reports are computed on request, not by a background job (the hoste
 | `POST /api/after-action-reports/:gameId/read` | Mark one report read (204) |
 | `POST /api/after-action-reports/read-all` | Mark the whole inbox read |
 
-`GET /api/favorites` and the favorites routes also return `pushMuted: boolean` per favorite. Every favorite team and favorite player also carries a fan category (migration 006, display only: no effect on reports or push): `tier` is `diehard`, `fan` (default for new and existing favorites) or `curious`, and `label` is optional free text (emoji allowed) or `null`. `PATCH` trims the label, caps it at 24 user-perceived characters, and treats `null` or an empty string as clearing it. All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google`. The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
+`GET /api/favorites` and the favorites routes also return `pushMuted: boolean` per favorite. Every favorite team and favorite player also carries a fan category (migration 006, display only: no effect on reports or push): `tier` is `diehard`, `fan` (default for new and existing favorites) or `curious`, and `label` is optional free text (emoji allowed) or `null`. `PATCH` trims the label, caps it at 24 user-perceived characters, and treats `null` or an empty string as clearing it. All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google` or `POST /api/auth/discord`. The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
 
 `GET /team/lines/:triCode?season=` returns forward lines, defense pairs and the starting goalie derived from the team's most recent completed game's NHL shift chart (`source: "shifts"`, or `source: "none"` with empty arrays when there is no completed game or the chart is unavailable). Every response is built from a single `gameId`. To keep the NHL call budget low it reuses the existing schedule caches (10-minute current-week cache, 12-hour season cache) and the roster cache, and fetches one shift chart per game from `api.nhle.com` plus one play-by-play per game from `api-web.nhle.com` (about 2 NHL calls per game; faceoffs taken pick each line's center, falling back to roster positions if the play-by-play is unavailable, and only the faceoff plays are cached): official (`OFF`) charts and faceoff data are cached permanently and shared by both teams, while `FINAL`-but-not-official games use a 5-minute cache. Empty charts are never cached permanently, and only raw NHL payloads are cached (lines are computed on read).
+
+### Sign-in (Google and Discord)
+
+| Route | Body | Response |
+| --- | --- | --- |
+| `POST /api/auth/google` | `{ credential }` (Google Identity Services ID token) | `{ token, email }` |
+| `POST /api/auth/discord` | `{ code, codeVerifier, redirectUri }` | `{ token, email }` |
+| `GET /api/auth/me` | `Authorization: Bearer <session token>` | `{ email }` |
+
+Discord uses the authorization code flow with PKCE (scopes `identify email`): the frontend sends the user to Discord with an S256 `code_challenge`, then posts the code with its `codeVerifier` (43-128 characters of `A-Z a-z 0-9 - . _ ~`, RFC 7636) and a `redirectUri` listed in `DISCORD_REDIRECT_URIS`. The API exchanges it with `DISCORD_CLIENT_ID`/`DISCORD_CLIENT_SECRET`; the Discord token is never stored or returned. A missing or invalid field is a 400; any provider failure is a 401 with the fixed message `Invalid Google credential.` or `Invalid Discord authorization.`
+
+Each Google or Discord identity maps to one account in `user_identities`. A new identity joins an existing account only when its email is verified (Google `email_verified`, Discord `verified`) and matches that account's verified email; otherwise it gets a new account. An unverified email never links accounts (an unverified Discord email is not stored at all). On a returning sign-in a changed verified email replaces the account's email unless another account already holds it. Emails are stored encrypted (`email_encrypted`) with a keyed hash (`email_lookup`) for matching, and are never logged.
 
 ### Web Push for After Action Reports
 

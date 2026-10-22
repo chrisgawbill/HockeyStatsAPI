@@ -133,3 +133,44 @@ test('runMigrations connects with the given ssl and always ends the client', asy
   assert.deepEqual(options, { connectionString: 'postgres://x', ssl });
   assert.equal(ended, true);
 });
+
+test('applies a .js migration through up(client) inside the same transaction, in filename order', async () => {
+  const dir = makeMigrationsDir({
+    '001_a.sql': 'SQL_A',
+    '002_b.js': "module.exports = { up: async (client) => { await client.query('JS_B'); } };",
+    '003_c.sql': 'SQL_C',
+  });
+  const client = makeFakeClient();
+  const appliedMigrations = await applyPendingMigrations(client, {
+    migrationsDir: dir,
+    log: quiet,
+  });
+
+  assert.deepEqual(appliedMigrations, ['001_a.sql', '002_b.js', '003_c.sql']);
+  const sqls = statements(client);
+  const jsIndex = sqls.indexOf('JS_B');
+  assert.ok(sqls.indexOf('SQL_A') < jsIndex && jsIndex < sqls.indexOf('SQL_C'));
+  assert.equal(sqls[jsIndex - 1], 'BEGIN');
+  assert.match(sqls[jsIndex + 1], /^INSERT INTO schema_migrations/);
+  assert.deepEqual(client.calls[jsIndex + 1].params, ['002_b.js']);
+  assert.equal(sqls[jsIndex + 2], 'COMMIT');
+});
+
+test('a failing .js migration rolls back and is not recorded', async () => {
+  const dir = makeMigrationsDir({
+    '001_a.js':
+      "module.exports = { up: async (client) => { await client.query('JS_A'); throw new Error('js boom'); } };",
+    '002_b.sql': 'SQL_B',
+  });
+  const client = makeFakeClient();
+  await assert.rejects(
+    () => applyPendingMigrations(client, { migrationsDir: dir, log: quiet }),
+    /js boom/,
+  );
+  const sqls = statements(client);
+  assert.ok(sqls.includes('JS_A'));
+  assert.ok(sqls.includes('ROLLBACK'));
+  assert.ok(!sqls.includes('COMMIT'));
+  assert.ok(!sqls.some((sql) => sql.startsWith('INSERT INTO schema_migrations')));
+  assert.ok(!sqls.includes('SQL_B'));
+});
