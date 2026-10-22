@@ -17,11 +17,15 @@
  * @property {number}      playerId
  * @property {string}      name            - skaterFullName
  * @property {string}      position        - positionCode
+ * @property {string[]}    teamTriCodes    - teamAbbrevs split, e.g. ["TOR"]; more than one after a trade
  * @property {number}      gamesPlayed
  * @property {number}      goals
  * @property {number}      assists
  * @property {number}      points
  * @property {number}      plusMinus
+ * @property {number}      shots
+ * @property {number|null} shootingPct     - fraction (0.173); NULL with no shots
+ * @property {number}      powerPlayGoals  - ppGoals
  * @property {number}      penaltyMinutes
  * @property {number|null} faceoffWinPct   - NULL when 0 (player takes no faceoffs)
  * @property {number|null} toiPerGame      - timeOnIcePerGame (seconds), for roster TOI merge
@@ -31,6 +35,7 @@
  * @typedef {Object} GoalieSummaryContract
  * @property {number}      goalieId
  * @property {string}      name            - goalieFullName
+ * @property {string[]}    teamTriCodes    - teamAbbrevs split, e.g. ["NYR"]
  * @property {number}      gamesPlayed
  * @property {number}      wins
  * @property {number}      losses
@@ -56,6 +61,19 @@
  */
 
 /**
+ * Splits the NHL's comma-separated `teamAbbrevs` ("TOR,BOS") into tri-codes.
+ * @param {unknown} teamAbbrevs
+ * @returns {string[]}
+ */
+function parseTeamTriCodes(teamAbbrevs) {
+  if (typeof teamAbbrevs !== 'string') return [];
+  return teamAbbrevs
+    .split(',')
+    .map((triCode) => triCode.trim())
+    .filter(Boolean);
+}
+
+/**
  * Map the NHL skater summary payload into contract rows. The NHL returns 0 for
  * players who take no faceoffs, so a faceoff percentage of 0 maps to null (N/A).
  * @param {any} summaryPayload - { data: [...] }
@@ -66,11 +84,15 @@ function mapSkaterSummary(summaryPayload) {
     playerId: skater.playerId,
     name: skater.skaterFullName ?? '',
     position: skater.positionCode ?? '',
+    teamTriCodes: parseTeamTriCodes(skater.teamAbbrevs),
     gamesPlayed: skater.gamesPlayed ?? 0,
     goals: skater.goals ?? 0,
     assists: skater.assists ?? 0,
     points: skater.points ?? 0,
     plusMinus: skater.plusMinus ?? 0,
+    shots: skater.shots ?? 0,
+    shootingPct: skater.shots > 0 ? (skater.shootingPct ?? null) : null,
+    powerPlayGoals: skater.ppGoals ?? 0,
     penaltyMinutes: skater.penaltyMinutes ?? 0,
     faceoffWinPct: skater.faceoffWinPct > 0 ? skater.faceoffWinPct : null,
     toiPerGame: skater.timeOnIcePerGame ?? null,
@@ -88,6 +110,7 @@ function mapGoalieSummary(summaryPayload) {
   return (summaryPayload?.data ?? []).map((goalie) => ({
     goalieId: goalie.goalieId ?? goalie.playerId,
     name: goalie.goalieFullName ?? '',
+    teamTriCodes: parseTeamTriCodes(goalie.teamAbbrevs),
     gamesPlayed: goalie.gamesPlayed ?? 0,
     wins: goalie.wins ?? 0,
     losses: goalie.losses ?? 0,
