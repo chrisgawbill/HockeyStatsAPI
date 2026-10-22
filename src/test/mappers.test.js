@@ -226,16 +226,28 @@ test('skater and goalie summaries map defaults and id/percentage variants', () =
         penaltyMinutes: 42,
         faceoffWinPct: 0,
         timeOnIcePerGame: 1320,
+        teamAbbrevs: 'COL',
+        shots: 300,
+        shootingPct: 0.17,
+        ppGoals: 15,
       },
-      { playerId: 8, faceoffWinPct: 0.55 },
+      { playerId: 8, faceoffWinPct: 0.55, shootingPct: 0 },
     ],
   });
 
   assert.equal(skaters[0].faceoffWinPct, null);
   assert.equal(skaters[0].toiPerGame, 1320);
+  assert.deepEqual(skaters[0].teamTriCodes, ['COL']);
+  assert.equal(skaters[0].shots, 300);
+  assert.equal(skaters[0].shootingPct, 0.17);
+  assert.equal(skaters[0].powerPlayGoals, 15);
   assert.equal(skaters[1].name, '');
   assert.equal(skaters[1].goals, 0);
   assert.equal(skaters[1].faceoffWinPct, 0.55);
+  assert.deepEqual(skaters[1].teamTriCodes, []);
+  assert.equal(skaters[1].shots, 0);
+  assert.equal(skaters[1].shootingPct, null);
+  assert.equal(skaters[1].powerPlayGoals, 0);
 
   const goalies = mapGoalieSummary({
     data: [
@@ -250,6 +262,7 @@ test('skater and goalie summaries map defaults and id/percentage variants', () =
         goalsAgainstAverage: 2.2,
         shutouts: 4,
         timeOnIcePerGame: 3600,
+        teamAbbrevs: 'TOR, BOS',
       },
       { playerId: 36, goalieFullName: 'Goalie Two' },
     ],
@@ -259,6 +272,8 @@ test('skater and goalie summaries map defaults and id/percentage variants', () =
   assert.equal(goalies[0].otLosses, 3);
   assert.equal(goalies[0].savePctg, 0.925);
   assert.equal(goalies[0].toiPerGame, 3600);
+  assert.deepEqual(goalies[0].teamTriCodes, ['TOR', 'BOS']);
+  assert.deepEqual(goalies[1].teamTriCodes, []);
   assert.equal(goalies[1].goalieId, 36);
   assert.equal(goalies[1].wins, 0);
   assert.equal(goalies[1].otLosses, 0);

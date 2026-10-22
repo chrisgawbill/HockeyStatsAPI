@@ -5,6 +5,7 @@ const {
   parseCategoryUpdate,
 } = require('#platform/favoriteCategory.js');
 const { chunk } = require('#platform/batchSql.js');
+const { fetchAllStatsRows } = require('#platform/nhlStatsPages.js');
 const repository = require('#slices/weeklyPlayerReports/weeklyPlayerReportRepository.js');
 const {
   isWeekStart,
@@ -16,8 +17,6 @@ const {
 
 const MAX_FAVORITE_PLAYERS = 10;
 const MAX_REPORTS = 12;
-const STATS_PAGE_SIZE = 100;
-const MAX_STATS_PAGES = 50;
 /** Keeps each stats URL's `playerId in (...)` list a sane length. */
 const PLAYER_ID_CHUNK = 50;
 
@@ -193,24 +192,16 @@ function createWeeklyPlayerReportService({ withTransaction, nhlApi, cache }) {
       { property: 'gameDate', direction: 'ASC' },
       { property: 'playerId', direction: 'ASC' },
     ]);
-    const gameRows = [];
-    for (let page = 0; page < MAX_STATS_PAGES; page += 1) {
-      const { data: pagePayload } = await statsClient.get(
-        `/summary?isAggregate=false&isGame=true` +
-          `&sort=${encodeURIComponent(sort)}` +
-          `&start=${page * STATS_PAGE_SIZE}&limit=${STATS_PAGE_SIZE}` +
-          `&cayenneExp=${encodeURIComponent(filter)}`,
-      );
-      const pageRows = pagePayload?.data;
-      if (!Array.isArray(pageRows)) {
-        throw new Error('NHL stats payload has no data array');
-      }
-      gameRows.push(...pageRows);
-      const totalRows = Number(pagePayload?.total);
-      const fetchedCount = (page + 1) * STATS_PAGE_SIZE;
-      if (pageRows.length < STATS_PAGE_SIZE) break;
-      if (Number.isFinite(totalRows) && fetchedCount >= totalRows) break;
-    }
+    const { data: gameRows } = await fetchAllStatsRows((start, limit) =>
+      statsClient
+        .get(
+          `/summary?isAggregate=false&isGame=true` +
+            `&sort=${encodeURIComponent(sort)}` +
+            `&start=${start}&limit=${limit}` +
+            `&cayenneExp=${encodeURIComponent(filter)}`,
+        )
+        .then((response) => response.data),
+    );
     return gameRows;
   }
 
