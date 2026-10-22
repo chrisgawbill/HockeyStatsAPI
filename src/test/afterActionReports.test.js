@@ -139,6 +139,20 @@ function fakeStore() {
             .map((favorite) => ({ ...favorite })),
         };
       }
+      if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
+      if (sql.includes('AS favorite_count')) {
+        const userFavorites = favorites.filter((favorite) => favorite.user_id === params[0]);
+        return {
+          rows: [
+            {
+              is_already_favorite: userFavorites.some(
+                (favorite) => favorite.team_tri_code === params[1],
+              ),
+              favorite_count: userFavorites.length,
+            },
+          ],
+        };
+      }
       if (sql.includes('INSERT INTO favorite_teams')) {
         if (
           !favorites.some(
@@ -218,6 +232,16 @@ test('service favorites round-trip with tri-code validation, and reports track r
   assert.equal((await service.listFavorites(7)).length, 1);
 
   await assert.rejects(service.addFavorite(7, 'TORONTO'), { status: 400 });
+
+  // At most five teams; re-favoriting one of them still works at the cap.
+  for (const triCode of ['MTL', 'BOS', 'OTT', 'BUF']) await service.addFavorite(7, triCode);
+  await assert.rejects(service.addFavorite(7, 'DET'), {
+    status: 409,
+    message: 'You can favorite at most 5 teams.',
+  });
+  assert.equal((await service.listFavorites(7)).length, 5);
+  await service.addFavorite(7, 'TOR');
+  for (const triCode of ['MTL', 'BOS', 'OTT', 'BUF']) await service.removeFavorite(7, triCode);
 
 
   // Reports carry read state and can be marked read one by one or all at once.

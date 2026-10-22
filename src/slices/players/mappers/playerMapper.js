@@ -34,6 +34,7 @@
  * @property {number}      gamesPlayed
  * @property {number}      wins
  * @property {number}      losses
+ * @property {number}      otLosses
  * @property {number|null} savePctg
  * @property {number|null} goalsAgainstAverage
  * @property {number}      shutouts
@@ -90,6 +91,7 @@ function mapGoalieSummary(summaryPayload) {
     gamesPlayed: goalie.gamesPlayed ?? 0,
     wins: goalie.wins ?? 0,
     losses: goalie.losses ?? 0,
+    otLosses: goalie.otLosses ?? 0,
     savePctg: goalie.savePct ?? null,
     goalsAgainstAverage: goalie.goalsAgainstAverage ?? null,
     shutouts: goalie.shutouts ?? 0,
