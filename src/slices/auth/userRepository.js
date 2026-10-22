@@ -1,52 +1,77 @@
 /**
- * Upserts a user row keyed on the Google `sub` claim. Updates the stored
- * email when it has changed (Google accounts can change their primary
- * email address). The email arrives already encrypted, with its lookup hash;
- * any leftover plaintext `email` is cleared. Returns the full row, including
- * `id` — either the newly inserted row or the pre-existing one.
+ * Fetches the user that owns a sign-in identity (provider + the provider's
+ * stable subject id), or null when the identity is not known yet.
  */
-async function upsertUserByGoogleSub(
-  client,
-  { googleSub, emailEncrypted, emailLookup },
-) {
-  const { rows: upsertedUserRows } = await client.query(
+async function findUserByIdentity(client, { provider, subject }) {
+  const { rows: userRows } = await client.query(
     `
-		INSERT INTO users (google_sub, email_encrypted, email_lookup)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (google_sub)
-		DO UPDATE SET
-			email_encrypted = EXCLUDED.email_encrypted,
-			email_lookup = EXCLUDED.email_lookup,
-			email = NULL
-		RETURNING *
+		SELECT users.*
+		FROM user_identities
+		JOIN users ON users.id = user_identities.user_id
+		WHERE user_identities.provider = $1 AND user_identities.subject = $2
 		`,
-    [googleSub, emailEncrypted ?? null, emailLookup ?? null],
+    [provider, subject],
   );
-  return upsertedUserRows[0];
+  return userRows[0] ?? null;
 }
 
-/**
- * Upserts a user row keyed on the Discord user id, storing the encrypted
- * email the same way the Google upsert does. Returns the full row.
- */
-async function upsertUserByDiscordId(
-  client,
-  { discordId, emailEncrypted, emailLookup },
-) {
-  const { rows: upsertedUserRows } = await client.query(
+/** Records a sign-in on an existing identity. */
+async function touchIdentity(client, { provider, subject }) {
+  await client.query(
     `
-		INSERT INTO users (discord_id, email_encrypted, email_lookup)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (discord_id)
-		DO UPDATE SET
-			email_encrypted = EXCLUDED.email_encrypted,
-			email_lookup = EXCLUDED.email_lookup,
-			email = NULL
+		UPDATE user_identities
+		SET last_signed_in_at = now()
+		WHERE provider = $1 AND subject = $2
+		`,
+    [provider, subject],
+  );
+}
+
+/** Fetches the user holding a verified email's lookup hash, or null. */
+async function findUserByEmailLookup(client, emailLookup) {
+  const { rows: userRows } = await client.query(
+    'SELECT * FROM users WHERE email_lookup = $1',
+    [emailLookup],
+  );
+  return userRows[0] ?? null;
+}
+
+/** Inserts a user with an already-encrypted email (or none) and returns the row. */
+async function createUser(client, { emailEncrypted, emailLookup }) {
+  const { rows: createdUserRows } = await client.query(
+    `
+		INSERT INTO users (email_encrypted, email_lookup)
+		VALUES ($1, $2)
 		RETURNING *
 		`,
-    [discordId, emailEncrypted ?? null, emailLookup ?? null],
+    [emailEncrypted ?? null, emailLookup ?? null],
   );
-  return upsertedUserRows[0];
+  return createdUserRows[0];
+}
+
+/** Attaches a sign-in identity to a user, stamped as signed in now. */
+async function addIdentity(client, { userId, provider, subject }) {
+  await client.query(
+    `
+		INSERT INTO user_identities (user_id, provider, subject, last_signed_in_at)
+		VALUES ($1, $2, $3, now())
+		`,
+    [userId, provider, subject],
+  );
+}
+
+/** Replaces a user's encrypted email and lookup hash and returns the row. */
+async function updateUserEmail(client, { userId, emailEncrypted, emailLookup }) {
+  const { rows: updatedUserRows } = await client.query(
+    `
+		UPDATE users
+		SET email_encrypted = $2, email_lookup = $3
+		WHERE id = $1
+		RETURNING *
+		`,
+    [userId, emailEncrypted ?? null, emailLookup ?? null],
+  );
+  return updatedUserRows[0];
 }
 
 /** Fetches a user by id, or null. */
@@ -59,7 +84,11 @@ async function getUserById(client, userId) {
 }
 
 module.exports = {
-  upsertUserByGoogleSub,
-  upsertUserByDiscordId,
+  findUserByIdentity,
+  touchIdentity,
+  findUserByEmailLookup,
+  createUser,
+  addIdentity,
+  updateUserEmail,
   getUserById,
 };

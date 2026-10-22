@@ -4,7 +4,12 @@ const createError = require('http-errors');
 /**
  * Auth endpoints:
  *   POST /api/auth/google   body { credential }  -> { token, email }
- *   POST /api/auth/discord  body { code, redirectUri }  -> { token, email }
+ *   POST /api/auth/discord  body { code, codeVerifier, redirectUri }  -> { token, email }
+ *     (OAuth2 authorization code + PKCE: codeVerifier is the RFC 7636 verifier
+ *     whose S256 challenge the frontend sent to Discord)
+ * Sign-in failures are 401 with a fixed message; 400 for a missing or invalid
+ * field. A Google and a Discord identity share one account when both carry the
+ * same verified email.
  *   GET  /api/auth/me       Authorization: Bearer <token>  -> { email }
  */
 function createAuthRouter({ authService }) {
@@ -22,9 +27,10 @@ function createAuthRouter({ authService }) {
 
   router.post('/discord', async (req, res, next) => {
     try {
-      const { code, redirectUri } = req.body || {};
+      const { code, codeVerifier, redirectUri } = req.body || {};
       const signedInUser = await authService.signInWithDiscord({
         code,
+        codeVerifier,
         redirectUri,
       });
       res.send(signedInUser);
