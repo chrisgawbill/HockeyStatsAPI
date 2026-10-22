@@ -3,8 +3,9 @@ const createError = require('http-errors');
 
 /**
  * Auth endpoints:
- *   POST /api/auth/google  body { credential }  -> { token, email }
- *   GET  /api/auth/me      Authorization: Bearer <token>  -> { email }
+ *   POST /api/auth/google   body { credential }  -> { token, email }
+ *   POST /api/auth/discord  body { code, redirectUri }  -> { token, email }
+ *   GET  /api/auth/me       Authorization: Bearer <token>  -> { email }
  */
 function createAuthRouter({ authService }) {
   const router = express.Router();
@@ -13,6 +14,19 @@ function createAuthRouter({ authService }) {
     try {
       const { credential } = req.body || {};
       const signedInUser = await authService.signInWithGoogle(credential);
+      res.send(signedInUser);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/discord', async (req, res, next) => {
+    try {
+      const { code, redirectUri } = req.body || {};
+      const signedInUser = await authService.signInWithDiscord({
+        code,
+        redirectUri,
+      });
       res.send(signedInUser);
     } catch (error) {
       next(error);
