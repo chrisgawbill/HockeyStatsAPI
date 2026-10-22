@@ -3,19 +3,42 @@ const userRepository = require('#slices/auth/userRepository.js');
 
 /**
  * Auth slice service: verifies Google Identity Services credentials and
- * issues/validates the app's own session JWT. Never persists or returns the
- * Google ID token itself.
+ * Discord OAuth2 authorization codes, and issues/validates the app's own
+ * session JWT. Never persists or returns a provider's token itself.
  *
  * @param {{
  *   withTransaction: typeof import('#platform/pool.js').withTransaction,
  *   googleAuth: { verifyGoogleIdToken: (idToken: string) => Promise<any> },
+ *   discordAuth: {
+ *     getAllowedRedirectUris: () => string[],
+ *     verifyDiscordCode: (params: { code: string, redirectUri: string }) =>
+ *       Promise<{ id: string, email: string|null, verified: boolean }>,
+ *   },
+ *   emailCrypto: {
+ *     protectEmail: (email: string|null) =>
+ *       { emailEncrypted: string|null, emailLookup: string|null },
+ *     decryptEmail: (encryptedEmail: string) => string,
+ *   },
  *   sessionJwt: {
  *     signSessionToken: (claims: { userId: number|string }) => string,
  *     verifySessionToken: (token: string) => { userId: number|string },
  *   },
  * }} deps
  */
-function createAuthService({ withTransaction, googleAuth, sessionJwt }) {
+function createAuthService({
+  withTransaction,
+  googleAuth,
+  discordAuth,
+  emailCrypto,
+  sessionJwt,
+}) {
+  /** Returns a user row's decrypted email, or null when none is stored. */
+  function readEmail(user) {
+    return user.email_encrypted
+      ? emailCrypto.decryptEmail(user.email_encrypted)
+      : null;
+  }
+
   return {
     /**
      * Verifies a Google ID token, upserts the user, and returns an app session
@@ -42,12 +65,55 @@ function createAuthService({ withTransaction, googleAuth, sessionJwt }) {
       const user = await withTransaction((client) =>
         userRepository.upsertUserByGoogleSub(client, {
           googleSub: payload.sub,
-          email: payload.email ?? null,
+          ...emailCrypto.protectEmail(payload.email ?? null),
         }),
       );
 
       const token = sessionJwt.signSessionToken({ userId: user.id });
-      return { token, email: user.email };
+      return { token, email: readEmail(user) };
+    },
+
+    /**
+     * Exchanges a Discord authorization code, upserts the user, and returns an
+     * app session token plus the user's email. `redirectUri` must be one of
+     * DISCORD_REDIRECT_URIS. The email is kept only when Discord has verified it.
+     * @param {{ code: string, redirectUri: string }} params
+     * @returns {Promise<{ token: string, email: string|null }>}
+     */
+    async signInWithDiscord({ code, redirectUri } = {}) {
+      if (!code || typeof code !== 'string') {
+        throw createError(400, 'code is required.');
+      }
+      if (
+        !redirectUri ||
+        typeof redirectUri !== 'string' ||
+        !discordAuth.getAllowedRedirectUris().includes(redirectUri)
+      ) {
+        throw createError(400, 'redirectUri is not allowed.');
+      }
+
+      let discordUser;
+      try {
+        discordUser = await discordAuth.verifyDiscordCode({ code, redirectUri });
+      } catch (error) {
+        throw createError(401, `Invalid Discord code: ${error.message}`);
+      }
+
+      if (!discordUser || !discordUser.id) {
+        throw createError(401, 'Invalid Discord code.');
+      }
+
+      const user = await withTransaction((client) =>
+        userRepository.upsertUserByDiscordId(client, {
+          discordId: discordUser.id,
+          ...emailCrypto.protectEmail(
+            discordUser.verified ? discordUser.email : null,
+          ),
+        }),
+      );
+
+      const token = sessionJwt.signSessionToken({ userId: user.id });
+      return { token, email: readEmail(user) };
     },
 
     /**
@@ -63,7 +129,7 @@ function createAuthService({ withTransaction, googleAuth, sessionJwt }) {
       if (!user) {
         throw createError(401, 'Unauthorized');
       }
-      return { email: user.email };
+      return { email: readEmail(user) };
     },
   };
 }

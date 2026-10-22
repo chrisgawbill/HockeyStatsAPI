@@ -5,6 +5,8 @@ const { runServiceTask } = require('#platform/runServiceTask.js');
 const { runAIPythonScript } = require('#platform/aiRunner.js');
 const { withTransaction } = require('#platform/pool.js');
 const googleAuth = require('#platform/googleAuthClient.js');
+const discordAuth = require('#platform/discordAuthClient.js');
+const emailCrypto = require('#platform/emailCrypto.js');
 const sessionJwt = require('#platform/sessionJwt.js');
 
 const {
@@ -59,6 +61,8 @@ function createContainer(overrides = {}) {
     runAIPythonScript,
     withTransaction,
     googleAuth,
+    discordAuth,
+    emailCrypto,
     sessionJwt,
     ...overrides,
   };

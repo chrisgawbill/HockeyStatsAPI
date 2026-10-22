@@ -25,6 +25,8 @@ pnpm run db:migrate
 
 Pending migrations also run automatically on `pnpm start`, before the server listens. When `CACHE_DATABASE_URL` is unset (filesystem-cache mode) the step is skipped; if a migration fails, the process exits non-zero and the server does not start. A Postgres advisory lock keeps concurrent instances from applying the same migration twice, and the connection uses the same SSL settings as the app (`DATABASE_CA_CERT` is required when SSL is on). `pnpm run db:migrate` still works for manual runs and fails if `CACHE_DATABASE_URL` is missing.
 
+After migrations, `pnpm start` also encrypts any plaintext `users.email` left from before migration 008 (`src/platform/encryptStoredEmails.js`, also runnable as `pnpm run db:encrypt-emails`). It needs `EMAIL_ENCRYPTION_KEY` and `EMAIL_LOOKUP_KEY` only when such rows exist, and does nothing once every row is encrypted.
+
 `DATABASE_URL` is used for normalized domain persistence when set; otherwise the service falls back to `CACHE_DATABASE_URL`. See `.env.example` for cache, database, AI, diagnostics, CORS-related deployment, and Google auth configuration.
 
 ## API
