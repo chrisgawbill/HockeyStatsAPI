@@ -78,6 +78,7 @@ function shortDayOfWeek(gameDate) {
 }
 
 const RECENT_TEAM_GAMES_TTL_MS = 10 * 60 * 1000;
+const GAMECENTER_TTL_MS = 5 * 60 * 1000;
 
 /**
  * Maps a raw club-schedule payload (season or week) to ScheduleGameContracts
@@ -129,7 +130,27 @@ function listSeasonWeekDates(seasonId) {
  */
 function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
   const { axiosNhl } = nhlApi;
-  const { getOrFetchCached, writeCache, CACHE_TYPES } = cache;
+  const { getOrFetchCached, readCache, writeCache, CACHE_TYPES } = cache;
+
+  /**
+   * Raw gamecenter payload cached under `key`. An official (`OFF`) game never
+   * changes again, so a cached copy of one is served forever; anything else
+   * (preview, live, unofficial FINAL) refetches after GAMECENTER_TTL_MS. Both
+   * cases share one key, and the cache upserts, so keeping finished games
+   * adds no rows.
+   */
+  async function getGamecenterPayload(key, nhlPath) {
+    const cachedPayload = await readCache(CACHE_TYPES.SCHEDULE, key, {
+      ttlMs: Infinity,
+    });
+    if (cachedPayload?.gameState === 'OFF') return cachedPayload;
+    return await getOrFetchCached(
+      CACHE_TYPES.SCHEDULE,
+      key,
+      () => axiosNhl.get(nhlPath).then((response) => response.data),
+      { ttlMs: GAMECENTER_TTL_MS },
+    );
+  }
 
   /**
    * Fetches a whole season's schedule from the NHL weekly endpoint. The NHL only
@@ -179,25 +200,14 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
       return { games: mapSeasonSchedule(schedulePayload) };
     },
 
-    /** Raw gamecenter landing payload for one game (short TTL passthrough). */
+    /** Raw gamecenter landing payload for one game (permanent once OFF). */
     async getGameLanding(gameID) {
-      return await getOrFetchCached(
-        CACHE_TYPES.SCHEDULE,
-        `landing_${gameID}`,
-        () => axiosNhl.get(`/gamecenter/${gameID}/landing`).then((response) => response.data),
-        { ttlMs: 5 * 60 * 1000 },
-      );
+      return await getGamecenterPayload(`landing_${gameID}`, `/gamecenter/${gameID}/landing`);
     },
 
-    /** Raw gamecenter boxscore payload for one game (short TTL passthrough). */
+    /** Raw gamecenter boxscore payload for one game (permanent once OFF). */
     async getGameBoxscore(gameID) {
-      return await getOrFetchCached(
-        CACHE_TYPES.SCHEDULE,
-        `boxscore_${gameID}`,
-        () =>
-          axiosNhl.get(`/gamecenter/${gameID}/boxscore`).then((response) => response.data),
-        { ttlMs: 5 * 60 * 1000 },
-      );
+      return await getGamecenterPayload(`boxscore_${gameID}`, `/gamecenter/${gameID}/boxscore`);
     },
 
     /**

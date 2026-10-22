@@ -58,3 +58,54 @@ test('getSeasonSchedule walks Sept 1 - next June 30 for current and past seasons
   await makeService(notCurrent, '20999999').getSeasonSchedule('20262027');
   assert.deepEqual(notCurrent.requestedDates, current.requestedDates);
 });
+
+/** Cache stub holding one stored entry; records the TTL each read asks for. */
+function makeStoredCache(stored) {
+  const calls = { reads: [], fetches: 0 };
+  return {
+    calls,
+    cache: {
+      CACHE_TYPES,
+      readCache: async (type, key, options) => {
+        calls.reads.push(options.ttlMs);
+        return stored;
+      },
+      getOrFetchCached: async (type, key, fetcher, options) => {
+        calls.reads.push(options.ttlMs);
+        calls.fetches += 1;
+        return fetcher();
+      },
+      writeCache: async () => {},
+    },
+  };
+}
+
+function makeGamecenterService(cache, nhlPayload) {
+  return createScheduleService({
+    nhlApi: { axiosNhl: { get: async () => ({ data: nhlPayload }) } },
+    cache,
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    runServiceTask: noopRunServiceTask,
+  });
+}
+
+test('gamecenter payloads are served from cache forever once the game is OFF', async () => {
+  const official = { id: 1, gameState: 'OFF' };
+  const { cache, calls } = makeStoredCache(official);
+  const service = makeGamecenterService(cache, { id: 1, gameState: 'LIVE' });
+  assert.deepEqual(await service.getGameBoxscore(1), official);
+  assert.deepEqual(await service.getGameLanding(1), official);
+  assert.equal(calls.fetches, 0);
+  assert.deepEqual(calls.reads, [Infinity, Infinity]);
+});
+
+test('gamecenter payloads for unfinished games use the 5-minute cache', async () => {
+  for (const gameState of ['LIVE', 'FINAL']) {
+    const { cache, calls } = makeStoredCache({ id: 1, gameState });
+    const fresh = { id: 1, gameState: 'OFF' };
+    const service = makeGamecenterService(cache, fresh);
+    assert.deepEqual(await service.getGameBoxscore(1), fresh);
+    assert.equal(calls.fetches, 1);
+    assert.deepEqual(calls.reads, [Infinity, 5 * 60 * 1000]);
+  }
+});
