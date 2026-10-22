@@ -245,6 +245,7 @@ test('skater and goalie summaries map defaults and id/percentage variants', () =
         gamesPlayed: 50,
         wins: 30,
         losses: 10,
+        otLosses: 3,
         savePct: 0.925,
         goalsAgainstAverage: 2.2,
         shutouts: 4,
@@ -255,10 +256,12 @@ test('skater and goalie summaries map defaults and id/percentage variants', () =
   });
 
   assert.equal(goalies[0].goalieId, 35);
+  assert.equal(goalies[0].otLosses, 3);
   assert.equal(goalies[0].savePctg, 0.925);
   assert.equal(goalies[0].toiPerGame, 3600);
   assert.equal(goalies[1].goalieId, 36);
   assert.equal(goalies[1].wins, 0);
+  assert.equal(goalies[1].otLosses, 0);
   assert.equal(goalies[1].savePctg, null);
 });
 

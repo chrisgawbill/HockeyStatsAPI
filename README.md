@@ -36,7 +36,7 @@ After Action Reports are computed on request, not by a background job (the hoste
 | Route | Purpose |
 | --- | --- |
 | `GET /api/favorites` | `{ favorites: [{ triCode, since, pushMuted, tier, label }] }` |
-| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` (re-PUT keeps tier and label) |
+| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` (re-PUT keeps tier and label); 409 past 5 teams (accounts already over 5 keep theirs) |
 | `PATCH /api/favorites/:triCode` | Body `{ tier?, label? }` (at least one); returns `{ favorites }`; 400 bad tier/label/empty body/bad code, 404 if not a favorite |
 | `GET /api/after-action-reports` | `{ reports, unreadCount }`, newest first, at most 25 |
 | `POST /api/after-action-reports/:gameId/read` | Mark one report read (204) |

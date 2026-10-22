@@ -8,6 +8,7 @@ const repository = require('#slices/afterActionReports/afterActionReportReposito
 const TRI_CODE_PATTERN = /^[A-Z]{3}$/;
 const COMPLETED_GAME_STATES = new Set(['OFF', 'FINAL']);
 const MAX_REPORTS = 25;
+const MAX_FAVORITE_TEAMS = 5;
 /**
  * A game counts for a favorite when it started no more than this long before
  * the team was favorited, so favoriting mid-game or right after the final
@@ -260,12 +261,22 @@ function createAfterActionReportService({
       return { favorites: await listFavorites(userId) };
     },
 
-    /** Favorites a team for the user and returns the updated favorites. */
+    /** Favorites a team (409 past the cap) and returns the updated favorites. */
     async addFavorite(userId, triCode) {
       const validTriCode = parseTriCode(triCode);
-      await withTransaction((client) =>
-        repository.insertFavoriteTeam(client, { userId, triCode: validTriCode }),
+      const added = await withTransaction((client) =>
+        repository.insertFavoriteTeam(client, {
+          userId,
+          triCode: validTriCode,
+          limit: MAX_FAVORITE_TEAMS,
+        }),
       );
+      if (!added) {
+        throw createError(
+          409,
+          `You can favorite at most ${MAX_FAVORITE_TEAMS} teams.`,
+        );
+      }
       return { favorites: await listFavorites(userId) };
     },
 
@@ -310,6 +321,7 @@ function createAfterActionReportService({
 }
 
 module.exports = {
+  MAX_FAVORITE_TEAMS,
   createAfterActionReportService,
   buildAfterActionReports,
   mergeTeamGames,

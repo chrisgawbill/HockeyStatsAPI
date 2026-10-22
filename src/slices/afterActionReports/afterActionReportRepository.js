@@ -12,8 +12,31 @@ async function listFavoriteTeams(client, userId) {
   return favoriteTeamRows;
 }
 
-/** Adds a favorite; re-favoriting keeps the original `created_at`. */
-async function insertFavoriteTeam(client, { userId, triCode }) {
+/**
+ * Adds a favorite unless the user already has `limit` others; re-favoriting
+ * keeps the original `created_at`. Returns false only when the cap blocked a
+ * new favorite. A per-user advisory lock serializes adds so two tabs cannot
+ * both pass the cap check.
+ */
+async function insertFavoriteTeam(client, { userId, triCode, limit }) {
+  await client.query(
+    "SELECT pg_advisory_xact_lock(hashtext('favorite_teams'), $1::int)",
+    [userId],
+  );
+  const {
+    rows: [favoriteCounts],
+  } = await client.query(
+    `
+		SELECT
+			COALESCE(bool_or(team_tri_code = $2), false) AS is_already_favorite,
+			count(*)::int AS favorite_count
+		FROM favorite_teams
+		WHERE user_id = $1
+		`,
+    [userId, triCode],
+  );
+  if (favoriteCounts.is_already_favorite) return true;
+  if (favoriteCounts.favorite_count >= limit) return false;
   await client.query(
     `
 		INSERT INTO favorite_teams (user_id, team_tri_code)
@@ -22,6 +45,7 @@ async function insertFavoriteTeam(client, { userId, triCode }) {
 		`,
     [userId, triCode],
   );
+  return true;
 }
 
 /** Removes a favorite team; a missing one is ignored. */

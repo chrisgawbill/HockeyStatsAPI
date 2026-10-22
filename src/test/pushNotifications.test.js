@@ -72,6 +72,20 @@ function fakeDb() {
             .map((favorite) => ({ ...favorite })),
         };
       }
+      if (sql.includes("hashtext('favorite_teams')")) return { rows: [] };
+      if (sql.includes('AS favorite_count')) {
+        const userFavorites = db.favorites.filter((favorite) => favorite.user_id === params[0]);
+        return {
+          rows: [
+            {
+              is_already_favorite: userFavorites.some(
+                (favorite) => favorite.team_tri_code === params[1],
+              ),
+              favorite_count: userFavorites.length,
+            },
+          ],
+        };
+      }
       if (sql.includes('INSERT INTO favorite_teams')) {
         if (
           !db.favorites.some(
