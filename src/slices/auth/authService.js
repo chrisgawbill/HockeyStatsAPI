@@ -3,6 +3,8 @@ const userRepository = require('#slices/auth/userRepository.js');
 
 // RFC 7636 code_verifier: 43-128 characters from the unreserved set.
 const CODE_VERIFIER_PATTERN = /^[A-Za-z0-9\-._~]{43,128}$/;
+// Postgres error code for a unique-constraint violation.
+const UNIQUE_VIOLATION = '23505';
 
 /**
  * Auth slice service: verifies Google Identity Services credentials and
@@ -46,33 +48,44 @@ function createAuthService({
   }
 
   /**
+   * Adopts a returning user's changed verified email, unless another user
+   * already holds it. Returns the (possibly updated) user row.
+   */
+  async function adoptVerifiedEmail(client, user, { email, emailLookup }) {
+    if (!emailLookup || user.email_lookup === emailLookup) {
+      return user;
+    }
+    const emailOwner = await userRepository.findUserByEmailLookup(
+      client,
+      emailLookup,
+    );
+    if (emailOwner) {
+      return user;
+    }
+    return await userRepository.updateUserEmail(client, {
+      userId: user.id,
+      emailEncrypted: emailCrypto.encryptEmail(email),
+      emailLookup,
+    });
+  }
+
+  /**
    * Resolves an identity to its account in one transaction: a known identity
-   * signs in as its user (adopting a changed verified email unless another
-   * user holds it); an unknown one links to the user holding the same
+   * signs in as its user; an unknown one links to the user holding the same
    * verified email, or else gets a new user. An unverified email never sets
    * or changes a lookup.
    */
   async function resolveUser(client, { provider, subject, email, emailLookup }) {
-    const existingUser = await userRepository.findUserByIdentity(client, {
+    const returningUser = await userRepository.findUserByIdentity(client, {
       provider,
       subject,
     });
-    if (existingUser) {
+    if (returningUser) {
       await userRepository.touchIdentity(client, { provider, subject });
-      if (emailLookup && existingUser.email_lookup !== emailLookup) {
-        const holder = await userRepository.findUserByEmailLookup(
-          client,
-          emailLookup,
-        );
-        if (!holder) {
-          return await userRepository.updateUserEmail(client, {
-            userId: existingUser.id,
-            emailEncrypted: emailCrypto.encryptEmail(email),
-            emailLookup,
-          });
-        }
-      }
-      return existingUser;
+      return await adoptVerifiedEmail(client, returningUser, {
+        email,
+        emailLookup,
+      });
     }
 
     const linkedUser = emailLookup
@@ -93,38 +106,45 @@ function createAuthService({
   }
 
   /**
-   * Shared sign-in for every provider. A unique-index race with a concurrent
-   * sign-in (23505) is retried once in a fresh transaction, which then sees
-   * the other sign-in's rows.
+   * Runs `resolveUser` in a transaction, retrying once when a concurrent
+   * sign-in won a unique-index race (23505); the retry sees its rows. A
+   * second race is reported as a 409.
+   */
+  async function resolveUserWithRetry(identityParams) {
+    const resolveInTransaction = () =>
+      withTransaction((client) => resolveUser(client, identityParams));
+    try {
+      return await resolveInTransaction();
+    } catch (error) {
+      if (error.code !== UNIQUE_VIOLATION) {
+        throw error;
+      }
+    }
+    try {
+      return await resolveInTransaction();
+    } catch (error) {
+      if (error.code === UNIQUE_VIOLATION) {
+        throw createError(409, 'Sign-in conflict. Please try again.');
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Shared sign-in for every provider: resolves the account and issues an
+   * app session token.
    * @param {{ provider: 'google'|'discord', subject: string,
    *   email: string|null, emailVerified: boolean }} identity
    * @returns {Promise<{ token: string, email: string|null }>}
    */
   async function signIn({ provider, subject, email, emailVerified }) {
-    const params = {
+    const user = await resolveUserWithRetry({
       provider,
       subject,
       email: email || null,
       emailLookup:
         emailVerified && email ? emailCrypto.hashEmailForLookup(email) : null,
-    };
-    let user;
-    try {
-      user = await withTransaction((client) => resolveUser(client, params));
-    } catch (error) {
-      if (error.code !== '23505') {
-        throw error;
-      }
-      try {
-        user = await withTransaction((client) => resolveUser(client, params));
-      } catch (retryError) {
-        if (retryError.code === '23505') {
-          throw createError(409, 'Sign-in conflict. Please try again.');
-        }
-        throw retryError;
-      }
-    }
-
+    });
     const token = sessionJwt.signSessionToken({ userId: user.id });
     return { token, email: readEmail(user) };
   }
