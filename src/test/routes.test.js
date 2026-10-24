@@ -240,6 +240,20 @@ test('player routes key caches by category or team, and season', async () => {
     corsi,
   );
 
+  const faceoffs = {
+    data: [
+      { playerId: 29, offensiveZoneFaceoffs: 210, defensiveZoneFaceoffs: 180 },
+    ],
+  };
+  assert.deepEqual(
+    await get(
+      '/player/skater/faceoffs?teamId=10&season=20232024',
+      [CACHE_TYPES.PLAYER, 'skater_faceoffs_10_20232024'],
+      faceoffs,
+    ),
+    faceoffs,
+  );
+
   const goalies = await get(
     '/player/goalie/summary?teamId=10&season=20232024',
     [CACHE_TYPES.PLAYER, 'goalie_summary_10_20232024'],

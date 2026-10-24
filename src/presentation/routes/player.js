@@ -9,6 +9,7 @@ const {
  *   GET /player/goalie/statLeaders/:statIndicator
  *   GET /player/skater/summary?teamId=
  *   GET /player/skater/corsi?teamId=
+ *   GET /player/skater/faceoffs?teamId=
  *   GET /player/goalie/summary?teamId=
  */
 function createPlayerRouter({ playerStatsService, statLeaderService }) {
@@ -58,6 +59,19 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
     try {
       res.send(
         await playerStatsService.getSkaterCorsi(req.query.teamId, req.seasonId),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/skater/faceoffs', async (req, res, next) => {
+    try {
+      res.send(
+        await playerStatsService.getSkaterFaceoffs(
+          req.query.teamId,
+          req.seasonId,
+        ),
       );
     } catch (error) {
       next(error);

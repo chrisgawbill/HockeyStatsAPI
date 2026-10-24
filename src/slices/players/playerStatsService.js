@@ -159,6 +159,20 @@ function createPlayerStatsService({ nhlApi, cache, runServiceTask }) {
       );
     },
 
+    /** Raw faceoff totals by zone, merged by playerId on the frontend. */
+    async getSkaterFaceoffs(teamId, seasonId) {
+      return await getOrFetchCached(
+        CACHE_TYPES.PLAYER,
+        `skater_faceoffs_${teamId || 'all'}_${seasonId}`,
+        () =>
+          axiosNhlStats
+            .get(
+              `/faceoffpercentages?cayenneExp=${buildCayenneFilter(seasonId, teamId)}&limit=100`,
+            )
+            .then((response) => response.data),
+      );
+    },
+
     /** Normalized GoalieSummaryContract rows; every goalie when no team is given. */
     async getGoalieSummary(teamId, seasonId) {
       const statsPayload = await getOrFetchCached(
