@@ -37,6 +37,7 @@
  * @property {string}      name            - goalieFullName
  * @property {string[]}    teamTriCodes    - teamAbbrevs split, e.g. ["NYR"]
  * @property {number}      gamesPlayed
+ * @property {number|null} gamesStarted
  * @property {number}      wins
  * @property {number}      losses
  * @property {number}      otLosses
@@ -112,6 +113,7 @@ function mapGoalieSummary(summaryPayload) {
     name: goalie.goalieFullName ?? '',
     teamTriCodes: parseTeamTriCodes(goalie.teamAbbrevs),
     gamesPlayed: goalie.gamesPlayed ?? 0,
+    gamesStarted: goalie.gamesStarted ?? null,
     wins: goalie.wins ?? 0,
     losses: goalie.losses ?? 0,
     otLosses: goalie.otLosses ?? 0,
