@@ -17,11 +17,12 @@ const {
   createFavoritesRouter,
 } = require('#presentation/routes/afterActionReports.js');
 const { createPushRouter } = require('#presentation/routes/push.js');
-const { shouldDispatch } = require('../../bin/aar-push-cron.js');
+const { hasActiveGames } = require('#slices/pushNotifications/activeGames.js');
 
 const SECRET = 'test-session-secret';
 const CRON = 'cron-secret-value';
 const ENDPOINT = 'https://push.example.com/send/abc';
+const NOTIFIER_SECRET = 'notifier-callback-secret';
 const NOW = Date.parse('2026-10-19T04:00:00Z');
 
 beforeEach(() => {
@@ -30,6 +31,7 @@ beforeEach(() => {
   process.env.VAPID_PRIVATE_KEY = 'priv';
   process.env.VAPID_SUBJECT = 'mailto:test@example.com';
   process.env.CRON_SECRET = CRON;
+  process.env.NOTIFIER_CALLBACK_SECRET = NOTIFIER_SECRET;
 });
 
 function authHeaders(userId = 7) {
@@ -139,6 +141,16 @@ function fakeDb() {
         );
         return { rows: [], rowCount: before - db.subs.length };
       }
+      if (sql.includes('DELETE FROM push_subscriptions WHERE endpoint')) {
+        db.subs = db.subs.filter(
+          (subscription) => subscription.endpoint !== params[0],
+        );
+        return { rows: [] };
+      }
+      if (sql.includes('DELETE FROM after_action_report_pushes')) {
+        db.ledger.delete(`${params[0]}:${params[1]}`);
+        return { rows: [] };
+      }
       if (sql.includes('DELETE FROM push_subscriptions WHERE id')) {
         db.subs = db.subs.filter(
           (subscription) => subscription.id !== params[0],
@@ -195,7 +207,17 @@ function fakeDb() {
   return db;
 }
 
-function build({ games, sendImpl, favoritePlayers = [], boxscore, boxscoreError } = {}) {
+const LIVE_SCOREBOARD = [{ gameState: 'LIVE', startTimeUTC: '2026-10-19T03:00:00Z' }];
+
+function build({
+  games,
+  sendImpl,
+  favoritePlayers = [],
+  boxscore,
+  boxscoreError,
+  scoreboardGames = LIVE_SCOREBOARD,
+  notifier,
+} = {}) {
   const db = fakeDb();
   const scheduleCalls = { season: [], recent: [] };
   const gameList = games ?? [game({ gameId: 100 })];
@@ -237,6 +259,8 @@ function build({ games, sendImpl, favoritePlayers = [], boxscore, boxscoreError 
     weeklyPlayerReportService: { listFavorites: async () => favoritePlayers },
     scheduleService,
     webPush,
+    ...(notifier ? { notifier } : {}),
+    listScoreboardGames: async () => scoreboardGames,
     now: () => NOW,
   });
   const pass = (req, res, next) => next();
@@ -660,39 +684,149 @@ test('dispatch loads each distinct team schedule once, fresh', async () => {
   ]);
 });
 
-test('shouldDispatch covers live, recent final, old final and upcoming games', () => {
+test('hasActiveGames covers live, recent final, old final and upcoming games', () => {
   const now = Date.parse('2026-10-19T04:00:00Z');
   const hoursAgo = (h) => new Date(now - h * 3600 * 1000).toISOString();
 
-  assert.equal(shouldDispatch([], now), false);
-  assert.equal(shouldDispatch(undefined, now), false);
+  assert.equal(hasActiveGames([], now), false);
+  assert.equal(hasActiveGames(undefined, now), false);
   assert.equal(
-    shouldDispatch([{ gameState: 'LIVE', startTimeUTC: hoursAgo(1) }], now),
+    hasActiveGames([{ gameState: 'LIVE', startTimeUTC: hoursAgo(1) }], now),
     true,
   );
   assert.equal(
-    shouldDispatch([{ gameState: 'CRIT', startTimeUTC: hoursAgo(2) }], now),
+    hasActiveGames([{ gameState: 'CRIT', startTimeUTC: hoursAgo(2) }], now),
     true,
   );
   assert.equal(
-    shouldDispatch([{ gameState: 'FINAL', startTimeUTC: hoursAgo(3) }], now),
+    hasActiveGames([{ gameState: 'FINAL', startTimeUTC: hoursAgo(3) }], now),
     true,
   );
   assert.equal(
-    shouldDispatch([{ gameState: 'OFF', startTimeUTC: hoursAgo(4.4) }], now),
+    hasActiveGames([{ gameState: 'OFF', startTimeUTC: hoursAgo(4.4) }], now),
     true,
   );
   assert.equal(
-    shouldDispatch([{ gameState: 'OFF', startTimeUTC: hoursAgo(4.6) }], now),
+    hasActiveGames([{ gameState: 'OFF', startTimeUTC: hoursAgo(4.6) }], now),
     false,
   );
   assert.equal(
-    shouldDispatch([{ gameState: 'FUT', startTimeUTC: hoursAgo(-2) }], now),
+    hasActiveGames([{ gameState: 'FUT', startTimeUTC: hoursAgo(-2) }], now),
     false,
   );
   assert.equal(
-    shouldDispatch([{ gameState: 'PRE', startTimeUTC: hoursAgo(0) }], now),
+    hasActiveGames([{ gameState: 'PRE', startTimeUTC: hoursAgo(0) }], now),
     false,
   );
-  assert.equal(shouldDispatch([{ gameState: 'FINAL' }], now), false);
+  assert.equal(hasActiveGames([{ gameState: 'FINAL' }], now), false);
+});
+
+test('dispatch skips when no game is live or recently final, but not when the scoreboard is down', async () => {
+  const quiet = build({
+    scoreboardGames: [{ gameState: 'FUT', startTimeUTC: '2026-10-19T23:00:00Z' }],
+  });
+  await setupUser(quiet, 7, ['TOR']);
+  assert.deepEqual(await dispatch(quiet), {
+    skipped: 'no-active-games',
+    users: 0,
+    sent: 0,
+    removed: 0,
+  });
+  assert.equal(quiet.scheduleCalls.recent.length, 0);
+
+  const scoreboardDown = build({ scoreboardGames: null });
+  await setupUser(scoreboardDown, 7, ['TOR']);
+  assert.equal((await dispatch(scoreboardDown)).sent, 1);
+});
+
+/** Runs `work` with console.error silenced. */
+async function withoutErrorLogs(work) {
+  const original = console.error;
+  console.error = () => {};
+  try {
+    return await work();
+  } finally {
+    console.error = original;
+  }
+}
+
+test('a game no device received is released, so the next dispatch retries it', async () => {
+  let isPushServiceDown = true;
+  const ctx = build({
+    games: [game({ gameId: 9 })],
+    sendImpl: async () => {
+      if (isPushServiceDown)
+        throw Object.assign(new Error('unavailable'), { statusCode: 503 });
+    },
+  });
+  await setupUser(ctx, 7, ['TOR']);
+
+  assert.equal((await withoutErrorLogs(() => dispatch(ctx))).sent, 0);
+  assert.ok(!ctx.db.ledger.has('7:9'));
+
+  isPushServiceDown = false;
+  assert.equal((await dispatch(ctx)).sent, 1);
+  assert.ok(ctx.db.ledger.has('7:9'));
+  assert.equal((await dispatch(ctx)).sent, 0);
+});
+
+test('with the notifier configured, pushes are queued there with per-device dedupe keys', async () => {
+  const notifierConfig = { url: 'http://127.0.0.1:9100', token: 'notifier-token' };
+  const enqueued = [];
+  let isNotifierDown = true;
+  const notifier = {
+    readNotifierConfig: () => notifierConfig,
+    enqueueMessages: async (config, messages) => {
+      assert.equal(config, notifierConfig);
+      if (isNotifierDown) throw new Error('ECONNREFUSED');
+      enqueued.push(...messages);
+    },
+  };
+  const ctx = build({ games: [game({ gameId: 9 })], notifier });
+  await setupUser(ctx, 7, ['TOR'], [ENDPOINT, 'https://push.example.com/send/two']);
+
+  // A notifier outage releases the claim instead of losing the push.
+  assert.equal((await withoutErrorLogs(() => dispatch(ctx))).sent, 0);
+  assert.ok(!ctx.db.ledger.has('7:9'));
+
+  isNotifierDown = false;
+  assert.deepEqual(await dispatch(ctx), { users: 1, sent: 2, removed: 0 });
+  assert.equal(ctx.sent.length, 0);
+  assert.deepEqual(
+    enqueued.map((message) => message.dedupeKey),
+    ['aar-9:u7:s1', 'aar-9:u7:s2'],
+  );
+  const [first] = enqueued;
+  assert.deepEqual(first.subscription, {
+    endpoint: ENDPOINT,
+    keys: { p256dh: 'p', auth: 'a' },
+  });
+  assert.equal(first.payload.tag, 'aar-9');
+  assert.equal(first.ttlSeconds, 6 * 60 * 60);
+  assert.equal(first.urgency, 'normal');
+});
+
+test('notifier events need the callback secret; a gone subscription is deleted', async () => {
+  const ctx = build();
+  await setupUser(ctx, 7, ['TOR'], [ENDPOINT, 'https://push.example.com/send/keep']);
+  const post = (body, secret = NOTIFIER_SECRET) =>
+    request(ctx.push, '/api/push/notifier-events', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' },
+      body: json(body),
+    });
+
+  assert.equal((await post({ type: 'subscription.gone', endpoint: ENDPOINT }, 'wrong')).status, 401);
+  assert.equal(ctx.db.subs.length, 2);
+
+  assert.equal((await post({ type: 'subscription.gone', endpoint: ENDPOINT })).status, 204);
+  assert.deepEqual(
+    ctx.db.subs.map((subscription) => subscription.endpoint),
+    ['https://push.example.com/send/keep'],
+  );
+  assert.equal((await post({ type: 'something.new' })).status, 204);
+  assert.equal((await post({ type: 'subscription.gone' })).status, 400);
+
+  delete process.env.NOTIFIER_CALLBACK_SECRET;
+  assert.equal((await post({ type: 'subscription.gone', endpoint: ENDPOINT })).status, 503);
 });

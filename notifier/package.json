@@ -1,0 +1,18 @@
+{
+  "name": "notifier",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Project-agnostic Web Push delivery queue and HTTP job scheduler",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.js",
+    "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js"
+  },
+  "dependencies": {
+    "croner": "10.0.1",
+    "express": "^4.22.2",
+    "web-push": "^3.6.7"
+  }
+}

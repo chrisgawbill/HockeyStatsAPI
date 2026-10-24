@@ -10,11 +10,13 @@ const {
  *   POST   /api/push/subscriptions  (session) PushSubscription JSON -> 204
  *   DELETE /api/push/subscriptions  (session) { endpoint } -> 204
  *   POST   /api/push/read           { token } -> 204 (read token, no session)
- *   POST   /api/push/dispatch       Bearer CRON_SECRET -> { users, sent, removed }
+ *   POST   /api/push/dispatch       Bearer CRON_SECRET -> { skipped?, users, sent, removed }
  *   GET    /api/push/weekly-report  (session) -> { enabled }
  *   PUT    /api/push/weekly-report  (session) { enabled } -> { enabled }
  *   POST   /api/push/weekly-dispatch Bearer CRON_SECRET, optional { weekStart }
  *          -> { weekStart, skipped?, created, users, sent, removed }
+ *   POST   /api/push/notifier-events Bearer NOTIFIER_CALLBACK_SECRET,
+ *          { type: "subscription.gone", endpoint } -> 204
  */
 function createPushRouter({
   pushNotificationService,
@@ -107,6 +109,18 @@ function createPushRouter({
       }
     },
   );
+
+  router.post('/notifier-events', async (req, res, next) => {
+    try {
+      await pushNotificationService.handleNotifierEvent(
+        req.get('authorization'),
+        req.body,
+      );
+      res.status(204).end();
+    } catch (error) {
+      next(error);
+    }
+  });
 
   return router;
 }

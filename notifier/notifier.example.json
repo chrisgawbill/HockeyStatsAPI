@@ -1,0 +1,37 @@
+{
+  "listen": { "host": "127.0.0.1", "port": 9100 },
+  "databasePath": "/var/lib/notifier/notifier.db",
+  "apps": [
+    {
+      "id": "hockeystats",
+      "token": "env:HOCKEYSTATS_NOTIFIER_TOKEN",
+      "vapid": {
+        "publicKey": "env:HOCKEYSTATS_VAPID_PUBLIC_KEY",
+        "privateKey": "env:HOCKEYSTATS_VAPID_PRIVATE_KEY",
+        "subject": "env:HOCKEYSTATS_VAPID_SUBJECT"
+      },
+      "events": {
+        "url": "http://127.0.0.1:9000/api/push/notifier-events",
+        "token": "env:HOCKEYSTATS_NOTIFIER_CALLBACK_SECRET"
+      },
+      "schedules": [
+        {
+          "id": "after-action-push",
+          "cron": "*/5 16-23,0-8 * * *",
+          "timezone": "UTC",
+          "url": "http://127.0.0.1:9000/api/push/dispatch",
+          "token": "env:HOCKEYSTATS_CRON_SECRET"
+        },
+        {
+          "id": "weekly-player-report",
+          "cron": "0 9,12 * * 1",
+          "timezone": "America/New_York",
+          "url": "http://127.0.0.1:9000/api/push/weekly-dispatch",
+          "token": "env:HOCKEYSTATS_CRON_SECRET",
+          "retries": 5,
+          "catchUp": true
+        }
+      ]
+    }
+  ]
+}

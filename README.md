@@ -75,11 +75,21 @@ Migration 004 adds `push_subscriptions`, the sent ledger `after_action_report_pu
 | `DELETE /api/push/subscriptions` | session | Body `{ endpoint }`; removes only the caller's row; 204 |
 | `PUT /api/favorites/:triCode/push-mute` | session | Body `{ muted: boolean }`; returns `{ favorites }`; 404 if not a favorite |
 | `POST /api/push/read` | read token | Body `{ token }` from the push payload; marks that game read; 204, 401 on a bad/expired token |
-| `POST /api/push/dispatch` | `Bearer CRON_SECRET` | Sends new pushes, returns `{ users, sent, removed }`; 401 bad secret, 503 when unconfigured; rate-limited |
+| `POST /api/push/dispatch` | `Bearer CRON_SECRET` | Sends new pushes, returns `{ users, sent, removed }` (or `{ skipped: "no-active-games", ... }`); 401 bad secret, 503 when unconfigured; rate-limited |
+| `POST /api/push/notifier-events` | `Bearer NOTIFIER_CALLBACK_SECRET` | Events from the notifier: `{ type: "subscription.gone", endpoint }` deletes that subscription; unknown types are ignored; 204, 400 without an endpoint, 401 bad secret, 503 when unset |
 
-Dispatch refreshes each distinct favorite team's current-week schedule (bypassing the 10-minute cache), then sends one push per game per user (to all of that user's devices) for unread reports that are not in the ledger, started within the last 12 hours, and involve at least one unmuted favorite. The ledger row is claimed before sending, so overlapping runs cannot double send; a 404/410 from the push service deletes that subscription. Read tokens are 30-day JWTs (`purpose: "aar-read"`) signed with `SESSION_JWT_SECRET`; they are rejected as session tokens and vice versa. Nothing runs on a timer inside the API.
+Dispatch first checks the public NHL scoreboard (today and yesterday, UTC) and returns `skipped: "no-active-games"` unless a game is live or went final within 4.5 hours of its start; it goes ahead if the scoreboard is unreachable. It then refreshes each distinct favorite team's current-week schedule (bypassing the 10-minute cache), then sends one push per game per user (to all of that user's devices) for unread reports that are not in the ledger, started within the last 12 hours, and involve at least one unmuted favorite. The ledger row is claimed before sending, so overlapping runs cannot double send. If no device got the push (every send failed for a reason other than 404/410, or the notifier could not be reached), the claim is released so the next dispatch tries again; a 404/410 from the push service deletes that subscription. Read tokens are 30-day JWTs (`purpose: "aar-read"`) signed with `SESSION_JWT_SECRET`; they are rejected as session tokens and vice versa. Nothing runs on a timer inside the API.
 
-The workflow `.github/workflows/after-action-push.yml` runs `bin/aar-push-cron.js` every 10 minutes (16:00-08:59 UTC) and on manual dispatch. The script checks the public NHL scoreboard and only calls the API when a game is live or went final within 4.5 hours (it dispatches anyway if the scoreboard is unreachable). Add the GitHub repository secrets `CRON_SECRET` (same value as the API env) and `AAR_PUSH_API_URL` (the API base URL, no trailing path). Scheduled workflows run only from the default branch (`main`), and GitHub disables them after 60 days without repository activity, so re-enable the workflow from the Actions tab in October when the season restarts.
+#### Delivery and scheduling: the notifier
+
+[`notifier/`](notifier/README.md) is a separate, project-agnostic service on the dev server. Its scheduler calls the dispatch routes (replacing the old GitHub Actions cron, which ran late or skipped runs), and its queue retries each push until it is delivered or its 6-hour TTL expires. Set `NOTIFIER_URL` (e.g. `http://127.0.0.1:9100`) and `NOTIFIER_TOKEN` (that app's token in the notifier config) and the API queues pushes there instead of sending them itself. Dedupe keys (`<tag>:u<userId>:s<subscriptionId>`) make a repeated enqueue harmless. Without these variables the API sends directly, once per device, as before. The notifier reports gone subscriptions to `POST /api/push/notifier-events`, so set `NOTIFIER_CALLBACK_SECRET` to the same value as the app's `events.token`. The VAPID keys must match in both places. `CRON_SECRET` is the bearer token the notifier's schedules send.
+
+The schedules in `notifier/notifier.example.json` are:
+
+- `after-action-push`: every 5 minutes, 16:00-08:59 UTC. With the scoreboard gate, a push lands about 5-10 minutes after the final.
+- `weekly-player-report`: Mondays at 9:00 and 12:00 America/New_York, with catch-up after downtime. The second run only sends what the first could not, because of the ledger.
+
+To rerun one by hand: `curl -X POST -H "Authorization: Bearer $NOTIFIER_TOKEN" http://127.0.0.1:9100/v1/schedules/weekly-player-report/run`. To pick a week, call `POST /api/push/weekly-dispatch` directly with `{ "weekStart": "YYYY-MM-DD" }` and `Bearer CRON_SECRET`.
 
 ### Favorite players and the Weekly Player Report
 
@@ -102,7 +112,7 @@ A report covers Monday 00:00 to Sunday 23:59 America/New_York. Each report holds
 
 The dispatch fetches the league schedule for the week (`/schedule/{monday}`); if no regular-season or playoff game was completed, it is a league break and returns `{ skipped: "league-break" }` with nothing created or sent. Otherwise it makes one stats REST per-game query for every distinct favorited skater and one for goalies across all users (paged), caches the raw payloads under week-keyed keys, and stores a report for each user unless none of their players or their teams played. Existing reports are never replaced. It then pushes each unread new report once (ledger claimed before sending) to users with a subscribed device and the switch on. Push payload: `{ kind: "weekly-report", title: "Weekly Player Report · Oct 13–19", body: <headline>, weekStart, tag: "wpr-<weekStart>", readToken }`. The read token (`purpose: "wpr-read"`, 30 days) is accepted by `POST /api/push/read`. Subscribing a device seeds this ledger with the user's existing reports. The NHL schedule and stats payload shapes are assumptions; spot-check the first real report.
 
-`.github/workflows/weekly-player-report.yml` runs `bin/weekly-report-cron.js` on Mondays at 13:05 and 14:05 UTC; the script only dispatches at or after 9:00 Eastern, so exactly one run counts in both EDT and EST (the ledger also prevents a second send). It uses the same `CRON_SECRET` and `AAR_PUSH_API_URL` secrets. A manual run always dispatches and accepts an optional `week_start`.
+The notifier's `weekly-player-report` schedule calls the weekly dispatch on Monday mornings, Eastern time; see the notifier section above.
 
 ## Deployment
 

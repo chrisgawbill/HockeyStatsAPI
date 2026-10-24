@@ -1,0 +1,18 @@
+[Unit]
+Description=Notifier (Web Push queue and HTTP scheduler)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=chris_dev
+WorkingDirectory=/home/chris_dev/projects/notifier/notifier
+Environment=NODE_ENV=production
+Environment=NOTIFIER_CONFIG=/etc/notifier/notifier.json
+EnvironmentFile=/etc/notifier/notifier.env
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/main.js
+Restart=always
+RestartSec=5
+StateDirectory=notifier
+
+[Install]
+WantedBy=multi-user.target

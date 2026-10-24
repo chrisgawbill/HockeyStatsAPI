@@ -2,6 +2,11 @@ const crypto = require('crypto');
 const createError = require('http-errors');
 const repository = require('#slices/pushNotifications/pushNotificationRepository.js');
 const {
+  hasActiveGames,
+  listRecentScoreboardGames,
+} = require('#slices/pushNotifications/activeGames.js');
+const notifierClient = require('#slices/pushNotifications/notifierClient.js');
+const {
   easternClock,
   isWeekStart,
   previousWeekStart,
@@ -121,10 +126,21 @@ function buildNotification(report, favorites = [], boxscore) {
   };
 }
 
+/** Throws 503 when `secret` is unset, 401 unless the header is `Bearer <secret>`. */
+function assertBearerSecret(authorizationHeader, secret) {
+  if (!secret) throw createError(503, 'Not configured.');
+  const [scheme, token] = String(authorizationHeader || '').split(' ');
+  if (scheme !== 'Bearer' || !token || !secretsMatch(token, secret)) {
+    throw createError(401, 'Unauthorized');
+  }
+}
+
 /**
- * Web Push slice: device subscriptions, the sent ledger, and the cron-driven
- * dispatch. Nothing runs on a timer inside the API; GitHub Actions calls
- * `dispatch` through the secured route.
+ * Web Push slice: device subscriptions, the sent ledger, and the scheduled
+ * dispatch. Nothing runs on a timer inside the API; the notifier service's
+ * scheduler calls `dispatch` and `weeklyDispatch` through the secured routes.
+ * With the notifier configured, pushes are queued there and retried; without
+ * it they are sent directly, once.
  *
  * @param {{
  *   withTransaction: typeof import('#platform/pool.js').withTransaction,
@@ -133,6 +149,8 @@ function buildNotification(report, favorites = [], boxscore) {
  *   weeklyPlayerReportService: ReturnType<typeof import('#slices/weeklyPlayerReports/weeklyPlayerReportService.js').createWeeklyPlayerReportService>,
  *   scheduleService: ReturnType<typeof import('#slices/schedule/scheduleService.js').createScheduleService>,
  *   webPush?: { sendNotification: Function },
+ *   notifier?: typeof import('#slices/pushNotifications/notifierClient.js'),
+ *   listScoreboardGames?: typeof listRecentScoreboardGames,
  *   now?: () => number,
  * }} deps
  */
@@ -143,6 +161,8 @@ function createPushNotificationService({
   weeklyPlayerReportService,
   scheduleService,
   webPush = require('web-push'),
+  notifier = notifierClient,
+  listScoreboardGames = listRecentScoreboardGames,
   now = () => Date.now(),
 }) {
   /** Returns the VAPID config, or throws 503 when push is not configured. */
@@ -174,17 +194,23 @@ function createPushNotificationService({
   }
 
   /**
-   * Sends one payload to every device of `userId`, deleting subscriptions the
-   * push service reports gone (404/410) and counting into `summary`.
+   * Sends one payload directly to each device, deleting subscriptions the
+   * push service reports gone (404/410). One attempt per device.
    */
-  async function sendToUser(userId, payload, vapid, summary, label) {
-    const subscriptions = await withTransaction((client) =>
-      repository.listSubscriptionsForUser(client, userId),
-    );
+  async function sendDirectly({
+    userId,
+    subscriptions,
+    payload,
+    vapid,
+    summary,
+    label,
+  }) {
+    const delivery = { reached: 0, failed: 0 };
     for (const subscription of subscriptions) {
       try {
         await sendToSubscription(subscription, payload, vapid);
         summary.sent += 1;
+        delivery.reached += 1;
       } catch (error) {
         if (error?.statusCode === 404 || error?.statusCode === 410) {
           await withTransaction((client) =>
@@ -192,6 +218,7 @@ function createPushNotificationService({
           );
           summary.removed += 1;
         } else {
+          delivery.failed += 1;
           console.error(
             `Push send failed (user ${userId}, ${label}):`,
             error?.statusCode ?? '',
@@ -200,6 +227,72 @@ function createPushNotificationService({
         }
       }
     }
+    return delivery;
+  }
+
+  /**
+   * Queues one payload per device with the notifier, which retries and
+   * reports gone subscriptions back through `handleNotifierEvent`.
+   */
+  async function queueWithNotifier({
+    userId,
+    subscriptions,
+    payload,
+    summary,
+    label,
+    notifierConfig,
+  }) {
+    if (subscriptions.length === 0) return { reached: 0, failed: 0 };
+    const messages = subscriptions.map((subscription) => ({
+      subscription: {
+        endpoint: subscription.endpoint,
+        keys: { p256dh: subscription.p256dh, auth: subscription.auth },
+      },
+      payload,
+      ttlSeconds: PUSH_TTL_SECONDS,
+      urgency: 'normal',
+      dedupeKey: `${payload.tag}:u${userId}:s${subscription.id}`,
+    }));
+    try {
+      await notifier.enqueueMessages(notifierConfig, messages);
+      summary.sent += messages.length;
+      return { reached: messages.length, failed: 0 };
+    } catch (error) {
+      console.error(
+        `Push enqueue failed (user ${userId}, ${label}):`,
+        error?.message ?? error,
+      );
+      return { reached: 0, failed: messages.length };
+    }
+  }
+
+  /**
+   * Sends one payload to every device of `userId`, counting into `summary`.
+   * Returns how many devices it reached (sent or queued) and how many failed
+   * for a reason worth retrying, so the caller can release its ledger claim
+   * when nothing got through.
+   */
+  async function sendToUser(userId, payload, vapid, summary, label) {
+    const subscriptions = await withTransaction((client) =>
+      repository.listSubscriptionsForUser(client, userId),
+    );
+    const sendRequest = {
+      userId,
+      subscriptions,
+      payload,
+      vapid,
+      summary,
+      label,
+    };
+    const notifierConfig = notifier.readNotifierConfig();
+    return notifierConfig
+      ? queueWithNotifier({ ...sendRequest, notifierConfig })
+      : sendDirectly(sendRequest);
+  }
+
+  /** True when no device got the push and a later dispatch should retry it. */
+  function isUndelivered(delivery) {
+    return delivery.reached === 0 && delivery.failed > 0;
   }
 
   /**
@@ -286,7 +379,18 @@ function createPushNotificationService({
       tag: `wpr-${weekStart}`,
       readToken: sessionJwt.signWeeklyReadToken({ userId, weekStart }),
     };
-    await sendToUser(userId, payload, vapid, summary, `week ${weekStart}`);
+    const delivery = await sendToUser(
+      userId,
+      payload,
+      vapid,
+      summary,
+      `week ${weekStart}`,
+    );
+    if (isUndelivered(delivery)) {
+      await withTransaction((client) =>
+        repository.releaseWeeklyPush(client, { userId, weekStart }),
+      );
+    }
   }
 
   /** Loads every subscribed user's favorite teams and the distinct team codes among them. */
@@ -379,13 +483,19 @@ function createPushNotificationService({
         tag: `aar-${report.gameId}`,
         readToken: sessionJwt.signReadToken({ userId, gameId: report.gameId }),
       };
-      await sendToUser(
+      const delivery = await sendToUser(
         userId,
         payload,
         vapid,
         summary,
         `game ${report.gameId}`,
       );
+      // Nothing reached a device: let the next dispatch try this game again.
+      if (isUndelivered(delivery)) {
+        await withTransaction((client) =>
+          repository.releasePush(client, { userId, gameId: report.gameId }),
+        );
+      }
     }
   }
 
@@ -499,23 +609,45 @@ function createPushNotificationService({
 
     /** Throws 503 when dispatch is unconfigured, 401 on a bad bearer secret. */
     assertDispatchAuthorized(authorizationHeader) {
-      const secret = process.env.CRON_SECRET;
-      if (!secret || !readVapidConfig()) {
+      if (!process.env.CRON_SECRET || !readVapidConfig()) {
         throw createError(503, 'Push dispatch is not configured.');
       }
-      const [scheme, token] = String(authorizationHeader || '').split(' ');
-      if (scheme !== 'Bearer' || !token || !secretsMatch(token, secret)) {
-        throw createError(401, 'Unauthorized');
+      assertBearerSecret(authorizationHeader, process.env.CRON_SECRET);
+    },
+
+    /**
+     * Applies an event the notifier reports (bearer NOTIFIER_CALLBACK_SECRET):
+     * `subscription.gone` deletes that endpoint's subscription. Unknown event
+     * types are ignored so the notifier can add new ones.
+     */
+    async handleNotifierEvent(authorizationHeader, event) {
+      assertBearerSecret(
+        authorizationHeader,
+        process.env.NOTIFIER_CALLBACK_SECRET,
+      );
+      const { type, endpoint } = event || {};
+      if (type !== 'subscription.gone') return;
+      if (!isNonEmptyString(endpoint)) {
+        throw createError(400, 'endpoint is required.');
       }
+      await withTransaction((client) =>
+        repository.deleteSubscriptionByEndpoint(client, endpoint),
+      );
     },
 
     /**
      * After Action Report dispatch: pushes each subscribed user's recent
-     * finished games for their unmuted favorite teams, once per game. Schedules
-     * are loaded fresh once per distinct team and shared by every user.
+     * finished games for their unmuted favorite teams, once per game. Skips
+     * everything when the NHL scoreboard shows no live or recently final game
+     * (and goes ahead when the scoreboard is unreachable). Schedules are loaded
+     * fresh once per distinct team and shared by every user.
      */
     async dispatch() {
       const vapid = requireVapidConfig();
+      const scoreboardGames = await listScoreboardGames(now());
+      if (scoreboardGames && !hasActiveGames(scoreboardGames, now())) {
+        return { skipped: 'no-active-games', users: 0, sent: 0, removed: 0 };
+      }
       const userIds = await withTransaction((client) =>
         repository.listSubscriptionUserIds(client),
       );

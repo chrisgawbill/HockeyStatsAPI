@@ -90,6 +90,21 @@ async function claimPush(client, { userId, gameId }) {
   return claimedRows.length > 0;
 }
 
+/** Gives a claimed (user, game) push back so a later dispatch can retry it. */
+async function releasePush(client, { userId, gameId }) {
+  await client.query(
+    'DELETE FROM after_action_report_pushes WHERE user_id = $1 AND game_id = $2',
+    [userId, gameId],
+  );
+}
+
+/** Deletes a subscription by endpoint, whichever user owns it (the push service reported it gone). */
+async function deleteSubscriptionByEndpoint(client, endpoint) {
+  await client.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [
+    endpoint,
+  ]);
+}
+
 /** Atomically claims a (user, week) weekly-report push. */
 async function claimWeeklyPush(client, { userId, weekStart }) {
   const { rows: claimedRows } = await client.query(
@@ -102,6 +117,14 @@ async function claimWeeklyPush(client, { userId, weekStart }) {
     [userId, weekStart],
   );
   return claimedRows.length > 0;
+}
+
+/** Gives a claimed (user, week) push back so a later dispatch can retry it. */
+async function releaseWeeklyPush(client, { userId, weekStart }) {
+  await client.query(
+    'DELETE FROM weekly_player_report_pushes WHERE user_id = $1 AND week_start = $2::date',
+    [userId, weekStart],
+  );
 }
 
 /** Marks every weekly report the user already has as pushed (opt-in seeding). */
@@ -145,6 +168,9 @@ async function listWeeklyPushOptOuts(client) {
 
 module.exports = {
   claimWeeklyPush,
+  releaseWeeklyPush,
+  releasePush,
+  deleteSubscriptionByEndpoint,
   seedWeeklyLedger,
   getWeeklyReportPush,
   setWeeklyReportPush,

@@ -22,7 +22,6 @@ const {
   createFavoritePlayersRouter,
   createWeeklyPlayerReportsRouter,
 } = require('#presentation/routes/weeklyPlayerReports.js');
-const { isSendWindow } = require('../../bin/weekly-report-cron.js');
 
 const SECRET = 'test-session-secret';
 const CRON = 'cron-secret-value';
@@ -485,13 +484,6 @@ test('Eastern week math: previous week across DST, labels, Monday checks, cron w
   assert.equal(isWeekStart('2026-10-13'), false);
   assert.equal(isWeekStart('2026-02-30'), false);
   assert.equal(isWeekStart('nope'), false);
-
-  // The cron script's send window is Monday at or after 9:00 ET.
-  assert.equal(isSendWindow(Date.parse('2026-10-19T13:05:00Z')), true);
-  assert.equal(isSendWindow(Date.parse('2026-10-19T12:55:00Z')), false);
-  assert.equal(isSendWindow(Date.parse('2026-11-02T13:05:00Z')), false);
-  assert.equal(isSendWindow(Date.parse('2026-11-02T14:05:00Z')), true);
-  assert.equal(isSendWindow(Date.parse('2026-10-20T14:05:00Z')), false);
 });
 
 test('schedule summary counts only completed regular-season/playoff games in the week', () => {
