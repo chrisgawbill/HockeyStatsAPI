@@ -55,6 +55,22 @@ test('leaders are empty when the NHL 404s the category, but other failures throw
   );
 });
 
+test('an NHL 5xx for one category serves no leaders instead of failing', async () => {
+  assert.deepEqual(
+    await makeService(failingWith({ status: 500 })).getGoalieLeaders(
+      'shutouts',
+      '20262027',
+    ),
+    [],
+  );
+  assert.deepEqual(
+    await makeService(
+      failingWith({ response: { status: 503 } }),
+    ).getSkaterLeaders('goals', '20262027'),
+    [],
+  );
+});
+
 test('getSkaterLeaders maps a normal successful payload', async () => {
   const service = makeService(async () => ({
     data: {
