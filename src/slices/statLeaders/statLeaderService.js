@@ -99,6 +99,7 @@ function createStatLeaderService({ nhlApi, cache, runServiceTask }) {
             .get(`/${endpoint}/${seasonId}/2?categories=${category}&limit=10`)
             .then((response) => response.data)
             .catch(emptyLeadersWhenCategoryMissing),
+        { seasonId },
       );
     } catch (error) {
       // The NHL API has answered a single empty category (goalie shutouts

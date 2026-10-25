@@ -141,6 +141,7 @@ function createPlayerStatsService({ nhlApi, cache, runServiceTask }) {
             seasonId,
             teamId,
           }),
+        { seasonId },
       );
       return mapSkaterSummary(statsPayload);
     },
@@ -156,6 +157,7 @@ function createPlayerStatsService({ nhlApi, cache, runServiceTask }) {
               `/percentages?cayenneExp=${buildCayenneFilter(seasonId, teamId)}&limit=100`,
             )
             .then((response) => response.data),
+        { seasonId },
       );
     },
 
@@ -170,6 +172,7 @@ function createPlayerStatsService({ nhlApi, cache, runServiceTask }) {
               `/faceoffpercentages?cayenneExp=${buildCayenneFilter(seasonId, teamId)}&limit=100`,
             )
             .then((response) => response.data),
+        { seasonId },
       );
     },
 
@@ -186,6 +189,7 @@ function createPlayerStatsService({ nhlApi, cache, runServiceTask }) {
             seasonId,
             teamId,
           }),
+        { seasonId },
       );
       return mapGoalieSummary(statsPayload);
     },
