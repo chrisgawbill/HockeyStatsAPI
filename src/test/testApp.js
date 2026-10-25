@@ -1,6 +1,5 @@
 const express = require('express');
 const http = require('http');
-const { Readable } = require('stream');
 
 function makeTestApp(path, router) {
   const app = express();
@@ -12,49 +11,28 @@ function makeTestApp(path, router) {
   return app;
 }
 
+/** Serves `app` on an ephemeral local port for one call and returns its JSON reply. */
 async function request(app, path, options = {}) {
-  const method = options.method || 'GET';
-  const body = options.body || null;
-  const req = new Readable({
-    read() {
-      if (body) {
-        this.push(body);
-      }
-      this.push(null);
-    },
-  });
-  req.url = path;
-  req.method = method;
-  req.headers = Object.fromEntries(
-    Object.entries(options.headers || {}).map(([key, value]) => [
-      key.toLowerCase(),
-      value,
-    ]),
-  );
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
-  return await new Promise((resolve, reject) => {
-    const response = new http.ServerResponse(req);
-    const chunks = [];
-
-    response.write = (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      return true;
+  try {
+    const { port } = server.address();
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      method: options.method || 'GET',
+      headers: options.headers,
+      body: options.body || undefined,
+    });
+    const text = await response.text();
+    return {
+      status: response.status,
+      body: text ? JSON.parse(text) : null,
+      headers: Object.fromEntries(response.headers),
     };
-
-    response.end = (chunk) => {
-      if (chunk) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      const text = Buffer.concat(chunks).toString('utf8');
-      resolve({
-        status: response.statusCode,
-        body: text ? JSON.parse(text) : null,
-        headers: response.getHeaders(),
-      });
-    };
-
-    app.handle(req, response, reject);
-  });
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 /** `request` with the JSON content headers express.json() needs for a body. */
