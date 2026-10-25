@@ -119,3 +119,172 @@ test('cache usage reports postgres bytes as the primary cache when configured', 
   });
   assert.ok(usage.local);
 });
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/** Installs a pg mock backed by `cacheRows` (cache_key -> row) and loads the cache in Postgres mode. */
+function loadPostgresCacheManager(cacheRows) {
+  require.cache[pgPath] = {
+    id: pgPath,
+    filename: pgPath,
+    loaded: true,
+    exports: {
+      Pool: class {
+        on() {}
+        async query(sql, params = []) {
+          if (String(sql).includes('SELECT timestamp_ms, data')) {
+            const cacheRow = cacheRows.get(params[0]);
+            return { rows: cacheRow ? [cacheRow] : [] };
+          }
+          if (String(sql).includes('INSERT INTO app_cache')) {
+            cacheRows.set(params[0], {
+              timestamp_ms: params[3],
+              data: params[4],
+            });
+          }
+          return { rows: [] };
+        }
+      },
+    },
+  };
+  delete require.cache[cacheManagerPath];
+  for (const key of Object.keys(originalEnv)) {
+    delete process.env[key];
+  }
+  process.env.CACHE_DATABASE_URL = 'postgres://user:pass@localhost:5432/hockey';
+  return require('#platform/cacheManager.js');
+}
+
+/** Waits until `isDone` holds, polling between event-loop turns. */
+async function waitFor(isDone) {
+  for (let attempt = 0; attempt < 50 && !isDone(); attempt++) {
+    await new Promise(setImmediate);
+  }
+  assert.ok(isDone());
+}
+
+const failingFetch = async () => {
+  throw new Error('NHL unavailable');
+};
+
+test('an expired entry on its default TTL is served at once and refreshed in the background', async () => {
+  const cacheRows = new Map([
+    [
+      'standings:20262027',
+      { timestamp_ms: Date.now() - 25 * HOUR_MS, data: { v: 'old' } },
+    ],
+  ]);
+  const cache = loadPostgresCacheManager(cacheRows);
+  let fetchCount = 0;
+  let releaseFetch;
+  const fetchGate = new Promise((resolve) => {
+    releaseFetch = resolve;
+  });
+  const fetchNew = async () => {
+    fetchCount++;
+    await fetchGate;
+    return { v: 'new' };
+  };
+
+  const [first, second] = await Promise.all([
+    cache.getOrFetchCached('standings', '20262027', fetchNew),
+    cache.getOrFetchCached('standings', '20262027', fetchNew),
+  ]);
+
+  assert.deepEqual(first, { v: 'old' });
+  assert.deepEqual(second, { v: 'old' });
+  releaseFetch();
+  await waitFor(() => cacheRows.get('standings:20262027').data.v === 'new');
+  assert.equal(fetchCount, 1);
+  assert.deepEqual(
+    await cache.getOrFetchCached('standings', '20262027', fetchNew),
+    { v: 'new' },
+  );
+});
+
+test('a failed background refresh keeps the expired entry', async () => {
+  const cacheRows = new Map([
+    [
+      'team:summary_all_20262027',
+      { timestamp_ms: Date.now() - 25 * HOUR_MS, data: { v: 'old' } },
+    ],
+  ]);
+  const cache = loadPostgresCacheManager(cacheRows);
+  let refreshAttempted = false;
+
+  const served = await cache.getOrFetchCached(
+    'team',
+    'summary_all_20262027',
+    async () => {
+      refreshAttempted = true;
+      throw new Error('NHL unavailable');
+    },
+  );
+
+  assert.deepEqual(served, { v: 'old' });
+  await waitFor(() => refreshAttempted);
+  await new Promise(setImmediate);
+  assert.deepEqual(cacheRows.get('team:summary_all_20262027').data, {
+    v: 'old',
+  });
+});
+
+test('an expired entry on a caller-set TTL waits for the refetch, falling back to it when the fetch fails', async () => {
+  const cacheRows = new Map([
+    [
+      'schedule:game_1',
+      { timestamp_ms: Date.now() - HOUR_MS, data: { v: 'old' } },
+    ],
+  ]);
+  const cache = loadPostgresCacheManager(cacheRows);
+  const liveTtl = { ttlMs: 5 * 60 * 1000 };
+
+  assert.deepEqual(
+    await cache.getOrFetchCached('schedule', 'game_1', failingFetch, liveTtl),
+    { v: 'old' },
+  );
+  assert.deepEqual(
+    await cache.getOrFetchCached(
+      'schedule',
+      'game_1',
+      async () => ({ v: 'new' }),
+      liveTtl,
+    ),
+    { v: 'new' },
+  );
+});
+
+test('a cache miss still fails when the fetch fails', async () => {
+  const cache = loadPostgresCacheManager(new Map());
+  await assert.rejects(
+    cache.getOrFetchCached('standings', '20262027', failingFetch),
+    /NHL unavailable/,
+  );
+});
+
+test('a completed season cached after it ended never expires; one cached mid-season does', async () => {
+  const afterSeasonEnd = new Date(2025, 9, 1).getTime();
+  const midSeason = new Date(2025, 1, 1).getTime();
+  const cacheRows = new Map([
+    [
+      'player:skater_all_20242025',
+      { timestamp_ms: afterSeasonEnd, data: { v: 'final' } },
+    ],
+    [
+      'player:goalie_all_20242025',
+      { timestamp_ms: midSeason, data: { v: 'midseason' } },
+    ],
+  ]);
+  const cache = loadPostgresCacheManager(cacheRows);
+  const pastSeason = { seasonId: '20242025' };
+
+  assert.deepEqual(
+    await cache.readCache('player', 'skater_all_20242025', pastSeason),
+    { v: 'final' },
+  );
+  assert.equal(await cache.readCache('player', 'skater_all_20242025'), null);
+  assert.equal(
+    await cache.readCache('player', 'goalie_all_20242025', pastSeason),
+    null,
+  );
+});

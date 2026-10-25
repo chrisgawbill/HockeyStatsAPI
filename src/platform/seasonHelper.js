@@ -26,11 +26,23 @@ function isValidSeasonId(idStr) {
   );
 }
 
+/**
+ * When a season is over for caching purposes: the September 1 rollover to the
+ * next season (see getCurrentSeasonId), long after its playoffs end.
+ * @param {string} seasonId A valid 8-digit season id.
+ * @returns {number} Epoch milliseconds of local midnight on September 1 of the season's end year.
+ */
+function getSeasonEndMs(seasonId) {
+  const endYear = parseInt(String(seasonId).slice(4, 8));
+  return new Date(endYear, 8, 1).getTime();
+}
+
 const INVALID_SEASON_MSG =
   "Invalid season format. Expected format is 'YYYYYYYY', where the first YYYY is the start year and the second YYYY is the end year (e.g., '20232024').";
 
 module.exports = {
   getCurrentSeasonId,
   isValidSeasonId,
+  getSeasonEndMs,
   INVALID_SEASON_MSG,
 };

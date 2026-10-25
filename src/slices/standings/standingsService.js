@@ -63,6 +63,7 @@ function createStandingsService({ nhlApi, cache, seasons }) {
         CACHE_TYPES.STANDINGS,
         seasonId,
         () => fetchStandings(seasonId),
+        { seasonId },
       );
       const standings = (standingsPayload.standings ?? [])
         .map(mapStandingsTeam)

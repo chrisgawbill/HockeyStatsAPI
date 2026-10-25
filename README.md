@@ -116,6 +116,17 @@ The dispatch fetches the league schedule for the week (`/schedule/{monday}`); if
 
 The notifier's `weekly-player-report` schedule calls the weekly dispatch on Monday mornings, Eastern time; see the notifier section above.
 
+## Caching
+
+NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for players, rosters, standings, stat leaders and teams, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 10-minute current week).
+
+- **Expired entries on a default lifetime** are returned at once while one background request refreshes them, so the first visitor after expiry does not wait on a slow NHL fetch (the league-wide summaries walk several pages). If the refresh fails, the expired copy stays and the next request tries again.
+- **Expired entries on a shorter lifetime** (live game data) wait for the refetch; if the NHL call fails, the expired copy is returned instead of an error.
+- **Missing entries** are fetched as before, and fail when the NHL call fails.
+- **Completed seasons** never expire for standings, stat leaders, team summaries and player summaries, once cached after the season ended (September 1 of its end year, the same rollover as the current-season id). A copy cached while the season was still running is refreshed once more, then kept.
+
+Concurrent requests for the same entry share one NHL fetch. There is no in-memory layer in front of Postgres.
+
 ## Deployment
 
 For deployment on this server through Jenkins and systemd, see

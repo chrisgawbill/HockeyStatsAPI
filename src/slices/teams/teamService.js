@@ -83,6 +83,7 @@ function createTeamService({ nhlApi, cache, runServiceTask }) {
           axiosNhlTeam
             .get(`/summary?cayenneExp=${encodeURIComponent(cayenneFilter)}`)
             .then((response) => response.data),
+        { seasonId },
       );
       runServiceTask(`team summary ${teamId || 'all'} ${seasonId}`, () =>
         persistTeamSeason({ seasonId, teamStatsPayload }),

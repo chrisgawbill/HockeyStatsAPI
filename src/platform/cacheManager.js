@@ -2,6 +2,10 @@ const fs = require('fs');
 const path = require('path');
 const { Pool } = require('pg');
 const { getSslConfig } = require('#platform/connectionConfig.js');
+const {
+  isValidSeasonId,
+  getSeasonEndMs,
+} = require('#platform/seasonHelper.js');
 
 const inFlightFetches = new Map();
 let cachePool = null;
@@ -92,9 +96,25 @@ function usesLocalCache() {
   );
 }
 
-/** True when the entry is younger than `ttlMs` (or never expires). */
-function isFresh(cachedAtMs, ttlMs) {
-  return ttlMs === Infinity || Date.now() - cachedAtMs < ttlMs;
+/**
+ * True when an entry still counts as fresh: it is younger than its TTL, or it
+ * belongs to `options.seasonId`, a completed season, and was cached after that
+ * season ended, so the NHL data behind it can no longer change.
+ */
+function isEntryFresh(entry, type, options) {
+  if (wasCachedAfterSeasonEnded(entry.cachedAtMs, options.seasonId)) {
+    return true;
+  }
+  const ttlMs = getTtl(type, options);
+  return ttlMs === Infinity || Date.now() - entry.cachedAtMs < ttlMs;
+}
+
+/** True when `seasonId` is a season that had already ended at `cachedAtMs`. */
+function wasCachedAfterSeasonEnded(cachedAtMs, seasonId) {
+  return (
+    isValidSeasonId(String(seasonId ?? '')) &&
+    cachedAtMs >= getSeasonEndMs(seasonId)
+  );
 }
 
 /** Builds the unique cache key `type:key` used in Postgres and for in-flight tracking. */
@@ -172,14 +192,12 @@ async function ensureExternalCacheTable() {
   return pool;
 }
 
-/** Reads a fresh entry from the cache directory, or null when missing, stale or unreadable. */
-async function readLocalCache(type, key, ttlMs) {
+/** Reads an entry, fresh or expired, from the cache directory as `{ data, cachedAtMs }`; null when missing or unreadable. */
+async function readLocalEntry(type, key) {
   const filePath = path.join(CACHE_DIRS[type], `${key}.json`);
   try {
     const entry = JSON.parse(await fs.promises.readFile(filePath, 'utf-8'));
-    if (isFresh(entry.timestamp, ttlMs)) {
-      return entry.data;
-    }
+    return { data: entry.data, cachedAtMs: entry.timestamp };
   } catch {}
   return null;
 }
@@ -194,8 +212,8 @@ async function writeLocalCache(type, key, value) {
   );
 }
 
-/** Reads a fresh entry from the Postgres cache, or null when missing, stale or unreachable. */
-async function readExternalCache(type, key, ttlMs) {
+/** Reads an entry, fresh or expired, from the Postgres cache as `{ data, cachedAtMs }`; null when missing or unreachable. */
+async function readExternalEntry(type, key) {
   try {
     const pool = await ensureExternalCacheTable();
     if (!pool) return null;
@@ -205,8 +223,7 @@ async function readExternalCache(type, key, ttlMs) {
     );
     const [cacheRow] = cacheRows;
     if (!cacheRow) return null;
-    if (!isFresh(Number(cacheRow.timestamp_ms), ttlMs)) return null;
-    return cacheRow.data;
+    return { data: cacheRow.data, cachedAtMs: Number(cacheRow.timestamp_ms) };
   } catch (error) {
     console.error(`Failed to read external ${type} cache for ${key}:`, error);
     return null;
@@ -245,27 +262,43 @@ async function readSeedCache(type, key) {
   return null;
 }
 
-/** Looks an entry up in the external cache, then the local cache, then the seed files; null on a miss. */
-async function readCache(type, key, options = {}) {
-  const ttlMs = getTtl(type, options);
+/** The entry readers of the enabled cache stores, external first. */
+function listEnabledEntryReaders() {
+  const entryReaders = [];
+  if (usesExternalCache()) entryReaders.push(readExternalEntry);
+  if (usesLocalCache()) entryReaders.push(readLocalEntry);
+  return entryReaders;
+}
 
-  if (usesExternalCache()) {
-    const externalEntry = await readExternalCache(type, key, ttlMs);
-    if (externalEntry !== null) return externalEntry;
-  }
-
-  if (usesLocalCache()) {
-    const localEntry = await readLocalCache(type, key, ttlMs);
-    if (localEntry !== null) return localEntry;
+/**
+ * Finds the entry for `type`/`key` as `{ data, isFresh }`: the first fresh
+ * copy in the enabled stores, else a bundled seed (written back to the stores),
+ * else the first expired copy; null when there is none at all.
+ */
+async function findCacheEntry(type, key, options) {
+  let expiredEntry = null;
+  for (const readEntry of listEnabledEntryReaders()) {
+    const storedEntry = await readEntry(type, key);
+    if (!storedEntry) continue;
+    if (isEntryFresh(storedEntry, type, options)) {
+      return { data: storedEntry.data, isFresh: true };
+    }
+    expiredEntry ??= storedEntry;
   }
 
   const seedEntry = await readSeedCache(type, key);
   if (seedEntry !== null) {
     await writeCache(type, key, seedEntry);
-    return seedEntry;
+    return { data: seedEntry, isFresh: true };
   }
 
-  return null;
+  return expiredEntry && { data: expiredEntry.data, isFresh: false };
+}
+
+/** Returns the fresh cached value for `type`/`key`, or null when it is missing or expired. */
+async function readCache(type, key, options = {}) {
+  const cachedEntry = await findCacheEntry(type, key, options);
+  return cachedEntry?.isFresh ? cachedEntry.data : null;
 }
 
 /** Writes an entry to every enabled cache store. */
@@ -283,17 +316,53 @@ async function writeCache(type, key, value) {
 }
 
 /**
- * Returns the cached value for `type`/`key`, calling `fetcher` on a miss and
- * caching its result. Concurrent misses for the same entry share one fetch.
+ * Returns the cached value for `type`/`key`, calling `fetcher` when it is
+ * missing or expired and caching the result.
+ *
+ * An expired entry on its type's default TTL (hours long) is returned at once
+ * while one refresh runs in the background. An expired entry on a caller-set
+ * `options.ttlMs` (live game data) waits for the refetch, falling back to the
+ * expired copy when the fetch fails. Pass `options.seasonId` for entries that
+ * stop changing once that season is over; see `isEntryFresh`.
  */
 async function getOrFetchCached(type, key, fetcher, options = {}) {
-  const cachedValue = await readCache(type, key, options);
-  if (cachedValue !== null) {
-    return cachedValue;
+  const cachedEntry = await findCacheEntry(type, key, options);
+  if (cachedEntry?.isFresh) {
+    return cachedEntry.data;
   }
+  if (!cachedEntry) {
+    return await fetchAndCache(type, key, fetcher);
+  }
+  if (options.ttlMs === undefined) {
+    refreshInBackground(type, key, fetcher);
+    return cachedEntry.data;
+  }
+  try {
+    return await fetchAndCache(type, key, fetcher);
+  } catch (error) {
+    console.warn(
+      `Serving expired ${type} cache for ${key} after a failed fetch:`,
+      error.message,
+    );
+    return cachedEntry.data;
+  }
+}
+
+/** Refreshes an entry without waiting; a failure keeps the expired copy and is only logged. */
+function refreshInBackground(type, key, fetcher) {
+  fetchAndCache(type, key, fetcher).catch((error) => {
+    console.warn(
+      `Background refresh of ${type} cache for ${key} failed; keeping the expired copy:`,
+      error.message,
+    );
+  });
+}
+
+/** Calls `fetcher` and caches its result; concurrent calls for the same entry share one fetch. */
+function fetchAndCache(type, key, fetcher) {
   const inFlightKey = buildCacheId(type, key);
   if (inFlightFetches.has(inFlightKey)) {
-    return await inFlightFetches.get(inFlightKey);
+    return inFlightFetches.get(inFlightKey);
   }
   const fetchPromise = fetcher()
     .then(async (fetchedValue) => {
@@ -307,7 +376,7 @@ async function getOrFetchCached(type, key, fetcher, options = {}) {
     .finally(() => inFlightFetches.delete(inFlightKey));
 
   inFlightFetches.set(inFlightKey, fetchPromise);
-  return await fetchPromise;
+  return fetchPromise;
 }
 
 /** True when a cache database URL is set. */
