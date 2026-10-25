@@ -3,9 +3,10 @@ const { requireAuth } = require('#presentation/middleware/requireAuth.js');
 
 /**
  * Favorite players, behind requireAuth:
- *   GET    /api/favorite-players            -> { favorites: [{ playerId, name, teamTriCode, position, headshot, since, tier, label }] }
+ *   GET    /api/favorite-players            -> { favorites: [{ playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }
  *   PATCH  /api/favorite-players/:playerId  body { tier?, label? } -> { favorites }
  *   PUT    /api/favorite-players/:playerId  -> { favorites } (409 past the cap)
+ *   PUT    /api/favorite-players/:playerId/push-mute  body { muted } -> { favorites }
  *   DELETE /api/favorite-players/:playerId  -> { favorites }
  */
 function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
@@ -42,6 +43,20 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
           req.userId,
           req.params.playerId,
           req.body,
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put('/:playerId/push-mute', async (req, res, next) => {
+    try {
+      res.send(
+        await weeklyPlayerReportService.setPushMuted(
+          req.userId,
+          req.params.playerId,
+          (req.body || {}).muted,
         ),
       );
     } catch (error) {

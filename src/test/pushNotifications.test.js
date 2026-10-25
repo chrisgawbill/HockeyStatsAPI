@@ -63,6 +63,7 @@ function fakeDb() {
     reads: new Set(),
     subs: [], // { id, user_id, endpoint, p256dh, auth }
     ledger: new Set(),
+    pushOff: new Set(), // user ids (strings) with the account switch off
     nextId: 1,
   };
   const client = {
@@ -126,9 +127,10 @@ function fakeDb() {
         const existing = db.subs.find(
           (subscription) => subscription.endpoint === endpoint,
         );
+        const previous_user_id = existing ? existing.user_id : null;
         if (existing) Object.assign(existing, { user_id, p256dh, auth });
         else db.subs.push({ id: db.nextId++, user_id, endpoint, p256dh, auth });
-        return { rows: [] };
+        return { rows: [{ previous_user_id }] };
       }
       if (sql.includes('DELETE FROM push_subscriptions WHERE user_id')) {
         const before = db.subs.length;
@@ -157,14 +159,24 @@ function fakeDb() {
         );
         return { rows: [] };
       }
-      if (sql.includes('SELECT DISTINCT user_id')) {
+      if (sql.includes('SELECT DISTINCT push_subscriptions.user_id')) {
         return {
           rows: [
             ...new Set(db.subs.map((subscription) => subscription.user_id)),
-          ].map((user_id) => ({
-            user_id,
-          })),
+          ]
+            .filter((user_id) => !db.pushOff.has(String(user_id)))
+            .map((user_id) => ({ user_id })),
         };
+      }
+      if (sql.includes('SELECT push_enabled')) {
+        return { rows: [{ push_enabled: !db.pushOff.has(String(params[0])) }] };
+      }
+      if (sql.includes('UPDATE users SET push_enabled')) {
+        const [userId, enabled] = params;
+        const wasEnabled = !db.pushOff.has(String(userId));
+        if (enabled) db.pushOff.delete(String(userId));
+        else db.pushOff.add(String(userId));
+        return { rows: [], rowCount: wasEnabled === enabled ? 0 : 1 };
       }
       if (sql.includes('FROM push_subscriptions')) {
         return {
@@ -829,4 +841,56 @@ test('notifier events need the callback secret; a gone subscription is deleted',
 
   delete process.env.NOTIFIER_CALLBACK_SECRET;
   assert.equal((await post({ type: 'subscription.gone', endpoint: ENDPOINT })).status, 503);
+});
+
+test('re-syncing a device the account already has does not reseed the ledger; a new device does', async () => {
+  const ctx = build({ games: [game({ gameId: 100 })] });
+  const post = (endpoint) =>
+    request(ctx.push, '/api/push/subscriptions', {
+      method: 'POST',
+      body: subscribeBody(endpoint),
+      headers: authHeaders(7),
+    });
+  assert.equal((await post(ENDPOINT)).status, 204);
+  await ctx.afterActionReportService.addFavorite(7, 'TOR');
+
+  // The app re-sends this device on load while game 100 waits to be pushed.
+  assert.equal((await post(ENDPOINT)).status, 204);
+  assert.equal(ctx.db.ledger.size, 0);
+  assert.deepEqual(await dispatch(ctx), { users: 1, sent: 1, removed: 0 });
+
+  // A second device is new to the account, so it seeds what is already there.
+  ctx.db.ledger.clear();
+  assert.equal((await post('https://push.example.com/send/two')).status, 204);
+  assert.deepEqual([...ctx.db.ledger], ['7:100']);
+});
+
+test('account switch: get, set, validate; off skips dispatch; back on does not push what finished while off', async () => {
+  const ctx = build({ games: [game({ gameId: 100 })] });
+  await setupUser(ctx, 7, ['TOR']);
+  const get = (headers = authHeaders(7)) =>
+    request(ctx.push, '/api/push/notifications', { headers });
+  const put = (body) =>
+    request(ctx.push, '/api/push/notifications', {
+      method: 'PUT',
+      body,
+      headers: authHeaders(7),
+    });
+
+  assert.equal((await get({})).status, 401);
+  assert.deepEqual((await get()).body, { enabled: true });
+  assert.equal((await put(json({ enabled: 'no' }))).status, 400);
+
+  assert.deepEqual((await put(json({ enabled: false }))).body, { enabled: false });
+  assert.deepEqual((await get()).body, { enabled: false });
+  assert.deepEqual(await dispatch(ctx), { users: 0, sent: 0, removed: 0 });
+
+  assert.deepEqual((await put(json({ enabled: true }))).body, { enabled: true });
+  assert.ok(ctx.db.ledger.has('7:100'));
+  assert.deepEqual(await dispatch(ctx), { users: 1, sent: 0, removed: 0 });
+
+  // Saying "on" again when it is already on does not reseed.
+  ctx.db.ledger.clear();
+  await put(json({ enabled: true }));
+  assert.equal(ctx.db.ledger.size, 0);
 });

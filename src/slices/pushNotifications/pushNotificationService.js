@@ -7,6 +7,7 @@ const {
 } = require('#slices/pushNotifications/activeGames.js');
 const notifierClient = require('#slices/pushNotifications/notifierClient.js');
 const {
+  buildHeadline,
   easternClock,
   isWeekStart,
   previousWeekStart,
@@ -338,7 +339,7 @@ function createPushNotificationService({
 
   /**
    * Lists the week's unread reports belonging to users who have a device
-   * subscribed and have not switched the weekly push off.
+   * subscribed, the account push switch on, and the weekly push on.
    */
   async function listWeeklyPushRecipients(weekStart) {
     const [subscribedUserIds, optedOutUserIds, weekReports] =
@@ -359,7 +360,26 @@ function createPushNotificationService({
     });
   }
 
-  /** Claims and pushes one user's weekly report; does nothing if already claimed. */
+  /** The report's players the user still counts in the weekly push (not muted). */
+  async function listWeeklyPushPlayers(userId, report) {
+    const favoritePlayers =
+      await weeklyPlayerReportService.listFavorites(userId);
+    const mutedPlayerIds = new Set(
+      favoritePlayers
+        .filter((favoritePlayer) => favoritePlayer.pushMuted)
+        .map((favoritePlayer) => favoritePlayer.playerId),
+    );
+    return report.players.filter(
+      (player) => !mutedPlayerIds.has(player.playerId),
+    );
+  }
+
+  /**
+   * Claims and pushes one user's weekly report; does nothing if already
+   * claimed. The body describes only the players the user counts in the
+   * push; when none of them played, the week is claimed but not sent, so
+   * unmuting a player later never pushes an old week.
+   */
   async function pushWeeklyReport({
     userId,
     report,
@@ -371,10 +391,12 @@ function createPushNotificationService({
       repository.claimWeeklyPush(client, { userId, weekStart }),
     );
     if (!claimed) return;
+    const pushPlayers = await listWeeklyPushPlayers(userId, report);
+    if (!pushPlayers.some((player) => player.played)) return;
     const payload = {
       kind: 'weekly-report',
       title: `Weekly Player Report · ${report.label}`,
-      body: report.headline,
+      body: buildHeadline(pushPlayers),
       weekStart,
       tag: `wpr-${weekStart}`,
       readToken: sessionJwt.signWeeklyReadToken({ userId, weekStart }),
@@ -508,14 +530,18 @@ function createPushNotificationService({
         : { enabled: false, publicKey: null };
     },
 
-    /** Stores the device subscription and seeds the sent ledger so old reports are not pushed. */
+    /**
+     * Stores the device subscription. A device new to the account seeds the
+     * sent ledger so old reports are not pushed; re-syncing a device the
+     * account already has does not, so it cannot swallow a pending push.
+     */
     async subscribe(userId, body) {
       requireVapidConfig();
       const subscription = parseSubscription(body);
-      await withTransaction((client) =>
+      const isNewDevice = await withTransaction((client) =>
         repository.upsertSubscription(client, { userId, ...subscription }),
       );
-      await markExistingReportsAsSent(userId);
+      if (isNewDevice) await markExistingReportsAsSent(userId);
     },
 
     /** Removes the user's subscription for an endpoint; a missing endpoint is ignored. */
@@ -544,6 +570,30 @@ function createPushNotificationService({
           weekToken.weekStart,
         );
       }
+    },
+
+    /** Whether the user's account-wide push switch is on. */
+    async getPushEnabled(userId) {
+      const enabled = await withTransaction((client) =>
+        repository.getPushEnabled(client, userId),
+      );
+      return { enabled };
+    },
+
+    /**
+     * Switches every push for the account on or off; `enabled` must be a
+     * boolean. Turning it back on records the current inbox as sent, so
+     * nothing that finished while it was off is pushed late.
+     */
+    async setPushEnabled(userId, enabled) {
+      if (typeof enabled !== 'boolean') {
+        throw createError(400, 'enabled must be a boolean.');
+      }
+      const changedCount = await withTransaction((client) =>
+        repository.setPushEnabled(client, { userId, enabled }),
+      );
+      if (enabled && changedCount) await markExistingReportsAsSent(userId);
+      return { enabled };
     },
 
     /** Whether the user's weekly report push is switched on. */

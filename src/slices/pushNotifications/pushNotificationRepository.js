@@ -1,16 +1,25 @@
-/** Upserts by endpoint; a re-subscribed endpoint moves to the caller. */
+/**
+ * Upserts by endpoint; a re-subscribed endpoint moves to the caller. Returns
+ * true when the endpoint is new to the caller (not a re-sync of their own device).
+ */
 async function upsertSubscription(client, { userId, endpoint, p256dh, auth }) {
-  await client.query(
+  const { rows: upsertedRows } = await client.query(
     `
+		WITH previous_owner AS (
+			SELECT user_id FROM push_subscriptions WHERE endpoint = $2
+		)
 		INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (endpoint) DO UPDATE
 		SET user_id = EXCLUDED.user_id,
 			p256dh = EXCLUDED.p256dh,
 			auth = EXCLUDED.auth
+		RETURNING (SELECT user_id FROM previous_owner) AS previous_user_id
 		`,
     [userId, endpoint, p256dh, auth],
   );
+  const previousUserId = upsertedRows[0]?.previous_user_id;
+  return previousUserId == null || String(previousUserId) !== String(userId);
 }
 
 /** Deletes only the caller's row; returns how many rows were removed. */
@@ -27,10 +36,16 @@ async function deleteSubscriptionById(client, id) {
   await client.query('DELETE FROM push_subscriptions WHERE id = $1', [id]);
 }
 
-/** Lists the distinct ids of users with at least one subscribed device. */
+/** Lists the distinct ids of users with at least one subscribed device and the account push switch on. */
 async function listSubscriptionUserIds(client) {
   const { rows: subscriberRows } = await client.query(
-    'SELECT DISTINCT user_id FROM push_subscriptions ORDER BY user_id',
+    `
+		SELECT DISTINCT push_subscriptions.user_id
+		FROM push_subscriptions
+		JOIN users ON users.id = push_subscriptions.user_id
+		WHERE users.push_enabled
+		ORDER BY push_subscriptions.user_id
+		`,
   );
   return subscriberRows.map((subscriberRow) => subscriberRow.user_id);
 }
@@ -158,6 +173,24 @@ async function setWeeklyReportPush(client, { userId, enabled }) {
   ]);
 }
 
+/** Whether the user's account-wide push switch is on; defaults to on for an unknown user. */
+async function getPushEnabled(client, userId) {
+  const { rows: settingRows } = await client.query(
+    'SELECT push_enabled FROM users WHERE id = $1',
+    [userId],
+  );
+  return settingRows[0] ? Boolean(settingRows[0].push_enabled) : true;
+}
+
+/** Turns the user's account-wide push switch on or off; returns 1 when it changed, else 0. */
+async function setPushEnabled(client, { userId, enabled }) {
+  const { rowCount: changedCount } = await client.query(
+    'UPDATE users SET push_enabled = $2 WHERE id = $1 AND push_enabled <> $2',
+    [userId, enabled],
+  );
+  return changedCount;
+}
+
 /** Users who switched the weekly-report push off. */
 async function listWeeklyPushOptOuts(client) {
   const { rows: optOutRows } = await client.query(
@@ -175,6 +208,8 @@ module.exports = {
   getWeeklyReportPush,
   setWeeklyReportPush,
   listWeeklyPushOptOuts,
+  getPushEnabled,
+  setPushEnabled,
   upsertSubscription,
   deleteSubscriptionForUser,
   deleteSubscriptionById,
