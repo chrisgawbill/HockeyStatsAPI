@@ -11,6 +11,8 @@ const {
  *   DELETE /api/push/subscriptions  (session) { endpoint } -> 204
  *   POST   /api/push/read           { token } -> 204 (read token, no session)
  *   POST   /api/push/dispatch       Bearer CRON_SECRET -> { skipped?, users, sent, removed }
+ *   GET    /api/push/notifications  (session) -> { enabled } (account-wide switch)
+ *   PUT    /api/push/notifications  (session) { enabled } -> { enabled }
  *   GET    /api/push/weekly-report  (session) -> { enabled }
  *   PUT    /api/push/weekly-report  (session) { enabled } -> { enabled }
  *   POST   /api/push/weekly-dispatch Bearer CRON_SECRET, optional { weekStart }
@@ -65,6 +67,27 @@ function createPushRouter({
         req.get('authorization'),
       );
       res.send(await pushNotificationService.dispatch());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/notifications', requireAuth, async (req, res, next) => {
+    try {
+      res.send(await pushNotificationService.getPushEnabled(req.userId));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put('/notifications', requireAuth, async (req, res, next) => {
+    try {
+      res.send(
+        await pushNotificationService.setPushEnabled(
+          req.userId,
+          (req.body || {}).enabled,
+        ),
+      );
     } catch (error) {
       next(error);
     }

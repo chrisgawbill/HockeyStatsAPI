@@ -48,6 +48,7 @@ function mapFavoriteRow(favoriteRow) {
     since: new Date(favoriteRow.created_at).toISOString(),
     tier: favoriteRow.tier ?? DEFAULT_FAVORITE_TIER,
     label: favoriteRow.label ?? null,
+    pushMuted: Boolean(favoriteRow.push_muted),
   };
 }
 
@@ -319,6 +320,23 @@ function createWeeklyPlayerReportService({ withTransaction, nhlApi, cache }) {
         }),
       );
       if (!updatedRowCount) throw createError(404, 'Player is not a favorite.');
+      return { favorites: await listFavorites(userId) };
+    },
+
+    /** Includes or leaves out a favorite player in the weekly-report push; 404 when not a favorite. */
+    async setPushMuted(userId, playerId, muted) {
+      const parsedPlayerId = parsePlayerId(playerId);
+      if (typeof muted !== 'boolean') {
+        throw createError(400, 'muted must be a boolean.');
+      }
+      const updatedCount = await withTransaction((client) =>
+        repository.updateFavoritePlayerPushMuted(client, {
+          userId,
+          playerId: parsedPlayerId,
+          muted,
+        }),
+      );
+      if (!updatedCount) throw createError(404, 'Player is not a favorite.');
       return { favorites: await listFavorites(userId) };
     },
 

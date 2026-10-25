@@ -135,6 +135,7 @@ function fakeDb() {
     reports: new Map(), // `${user}:${week}` -> { payload, created_at, read_at }
     ledger: new Set(),
     pushOff: new Set(),
+    accountPushOff: new Set(), // user ids with the account-wide switch off
     subs: [], // { id, user_id, endpoint, p256dh, auth }
     nextId: 1,
     clock: 0,
@@ -170,6 +171,7 @@ function fakeDb() {
           created_at: new Date(Date.UTC(2026, 9, 1, 0, db.clock)),
           tier: 'fan',
           label: null,
+          push_muted: false,
         });
         return { rows: [], rowCount: 1 };
       }
@@ -183,6 +185,14 @@ function fakeDb() {
         if (changeLabel) favoriteRow.label = label;
         return { rows: [], rowCount: 1 };
       }
+      if (sql.includes('UPDATE favorite_players') && sql.includes('push_muted')) {
+        const [user_id, player_id, muted] = params;
+        const favoriteRow = db.favorites.find(
+          (favorite) => favorite.user_id === user_id && favorite.player_id === String(player_id),
+        );
+        if (favoriteRow) favoriteRow.push_muted = muted;
+        return { rows: [], rowCount: favoriteRow ? 1 : 0 };
+      }
       if (sql.includes('DELETE FROM favorite_players')) {
         db.favorites = db.favorites.filter(
           (favorite) =>
@@ -192,7 +202,9 @@ function fakeDb() {
       }
       if (sql.includes('FROM favorite_players') && sql.includes('WHERE')) {
         return {
-          rows: db.favorites.filter((favorite) => favorite.user_id === params[0]),
+          rows: db.favorites.filter(
+            (favorite) => String(favorite.user_id) === String(params[0]),
+          ),
         };
       }
       if (sql.includes('FROM favorite_players')) {
@@ -265,13 +277,13 @@ function fakeDb() {
       if (sql.includes('weekly_report_push = false')) {
         return { rows: [...db.pushOff].map((id) => ({ id })) };
       }
-      if (sql.includes('SELECT DISTINCT user_id')) {
+      if (sql.includes('SELECT DISTINCT push_subscriptions.user_id')) {
         return {
           rows: [
             ...new Set(db.subs.map((subscription) => subscription.user_id)),
-          ].map((user_id) => ({
-            user_id,
-          })),
+          ]
+            .filter((user_id) => !db.accountPushOff.has(String(user_id)))
+            .map((user_id) => ({ user_id })),
         };
       }
       if (sql.includes('DELETE FROM push_subscriptions WHERE id')) {
@@ -638,6 +650,7 @@ test('favorite players: add, list, remove, validation, auth, and the cap of 10',
       position: 'C',
       headshot: `https://assets.example/${MCDAVID}.png`,
       since: added.body.favorites[0].since,
+      pushMuted: false,
       tier: 'fan',
       label: null,
     },
@@ -990,4 +1003,72 @@ test('weekly report push switch: get, set, validate', async () => {
     (await request(ctx.push, '/api/push/weekly-report')).status,
     401,
   );
+});
+
+test('favorite players: push-mute route validates, 404s, and favorites expose pushMuted', async () => {
+  const ctx = build();
+  await favorite(ctx, 7, MCDAVID);
+  const put = (playerId, body, headers = auth(7)) =>
+    request(ctx.favorites, `/api/favorite-players/${playerId}/push-mute`, {
+      method: 'PUT',
+      headers,
+      body,
+    });
+  assert.equal((await put(MCDAVID, json({ muted: true }), {})).status, 401);
+  assert.equal((await put(MCDAVID, json({ muted: 'yes' }))).status, 400);
+  assert.equal((await put('abc', json({ muted: true }))).status, 400);
+  assert.equal((await put(HUGHES, json({ muted: true }))).status, 404);
+
+  const muted = await put(MCDAVID, json({ muted: true }));
+  assert.equal(muted.status, 200);
+  assert.equal(muted.body.favorites[0].pushMuted, true);
+  // Re-favoriting keeps the toggle.
+  const again = await favorite(ctx, 7, MCDAVID);
+  assert.equal(again.body.favorites[0].pushMuted, true);
+});
+
+test('weekly push describes only unmuted players; a week with none of them playing is claimed, not sent', async () => {
+  const ctx = build();
+  await seedUsers(ctx);
+  const mute = (playerId) =>
+    request(ctx.favorites, `/api/favorite-players/${playerId}/push-mute`, {
+      method: 'PUT',
+      headers: auth(7),
+      body: json({ muted: true }),
+    });
+  assert.equal((await mute(MCDAVID)).body.favorites[0].pushMuted, true);
+  const response = await weeklyDispatch(ctx);
+  assert.equal(response.body.sent, 1);
+  assert.equal(ctx.sent[0].payload.body, 'Stuart Skinner: 1-0-0 in 1 GP');
+  // The stored report still lists every favorite.
+  const stored = ctx.db.reports.get(`7:${WEEK}`).payload;
+  const storedPayload = typeof stored === 'string' ? JSON.parse(stored) : stored;
+  assert.equal(
+    storedPayload.headline,
+    'Connor McDavid: 2G 4A in 2 GP and 1 more',
+  );
+
+  const allMuted = build();
+  await seedUsers(allMuted);
+  for (const playerId of [MCDAVID, SKINNER, HUGHES, MATTHEWS]) {
+    await request(allMuted.favorites, `/api/favorite-players/${playerId}/push-mute`, {
+      method: 'PUT',
+      headers: auth(7),
+      body: json({ muted: true }),
+    });
+  }
+  const silent = await weeklyDispatch(allMuted);
+  assert.equal(silent.body.sent, 0);
+  assert.equal(allMuted.sent.length, 0);
+  assert.ok(allMuted.db.ledger.has(`7:${WEEK}`));
+});
+
+test('the account-wide switch off skips the weekly push', async () => {
+  const ctx = build();
+  await seedUsers(ctx);
+  ctx.db.accountPushOff.add('7');
+  const response = await weeklyDispatch(ctx);
+  assert.equal(response.body.created, 2);
+  assert.equal(response.body.users, 0);
+  assert.equal(ctx.sent.length, 0);
 });
