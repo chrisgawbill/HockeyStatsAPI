@@ -52,6 +52,25 @@ After Action Reports are computed on request, not by a background job (the hoste
 
 `GET /team/lines/:triCode?season=` returns forward lines, defense pairs and the starting goalie derived from the team's most recent completed game's NHL shift chart (`source: "shifts"`, or `source: "none"` with empty arrays when there is no completed game or the chart is unavailable). Every response is built from a single `gameId`. To keep the NHL call budget low it reuses the existing schedule caches (10-minute current-week cache, 12-hour season cache) and the roster cache, and fetches one shift chart per game from `api.nhle.com` plus one play-by-play per game from `api-web.nhle.com` (about 2 NHL calls per game; faceoffs taken pick each line's center, falling back to roster positions if the play-by-play is unavailable, and only the faceoff plays are cached): official (`OFF`) charts and faceoff data are cached permanently and shared by both teams, while `FINAL`-but-not-official games use a 5-minute cache. Empty charts are never cached permanently, and only raw NHL payloads are cached (lines are computed on read).
 
+### Schedule and game data
+
+| Route | Purpose |
+| --- | --- |
+| `GET /schedule?season=` | Season schedule as `{ games }` |
+| `GET /schedule/landing/:gameId` | Raw NHL gamecenter landing payload |
+| `GET /schedule/:gameId` | Raw NHL gamecenter boxscore payload |
+| `GET /schedule/playbyplay/:gameId` | A game's shots and goals for shot maps and game flow (below); 404 for a malformed or unknown game id |
+
+`GET /schedule/playbyplay/:gameId` returns `{ gameId, gameState, homeTeam: { id, triCode }, awayTeam, events }`. Each event is `{ eventId, period, periodType ("REG"/"OT"), timeInPeriod ("MM:SS"), elapsedSeconds, type, teamTriCode, shooterId, shooterName, goalieId, x, y, shotType, strength }`, in game order:
+
+- `type` is `goal`, `shot` (on goal), `miss` or `block`. Every other NHL play type is dropped, and shootout attempts are left out. A game that has not started has no events.
+- `teamTriCode` is the shooting team, also for a blocked shot (which the NHL credits to the blocking team). `goalieId` is `null` on an empty net.
+- `elapsedSeconds` counts from puck drop with 20-minute periods, so overtime starts at 3600.
+- `strength` (`ev`/`pp`/`sh`, `null` without a situation code) is from the shooting team's side. A team that pulled its goalie counts one skater fewer, so an extra attacker alone is `ev`.
+- **Coordinates:** NHL rink feet from center ice, `x` from -100 to 100 along the rink and `y` from -42.5 to 42.5 across it. The NHL switches ends each period; the response always has the **home team shooting toward +x and the away team toward -x**, so in a period where home attacks the other end both `x` and `y` are negated (a 180° turn). A period's ends come from the NHL's `homeTeamDefendingSide`, or, when no play has it, from which side the period's offensive-zone events are on. An event with no coordinates, or in a period whose ends cannot be told, keeps `x` and `y` as `null`.
+
+The raw NHL payload is cached (permanently once the game is official, `OFF`; 1 minute while it is live; otherwise 5 minutes) and mapped on every read.
+
 ### Sign-in (Google and Discord)
 
 | Route | Body | Response |
@@ -118,7 +137,7 @@ The notifier's `weekly-player-report` schedule calls the weekly dispatch on Mond
 
 ## Caching
 
-NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for players, rosters, standings, stat leaders and teams, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 10-minute current week).
+NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for players, rosters, standings, stat leaders and teams, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 1-minute play-by-play while a game is live, 10-minute current week).
 
 - **Expired entries on a default lifetime** are returned at once while one background request refreshes them, so the first visitor after expiry does not wait on a slow NHL fetch (the league-wide summaries walk several pages). If the refresh fails, the expired copy stays and the next request tries again.
 - **Expired entries on a shorter lifetime** (live game data) wait for the refetch; if the NHL call fails, the expired copy is returned instead of an error.

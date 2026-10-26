@@ -109,3 +109,30 @@ test('gamecenter payloads for unfinished games use the 5-minute cache', async ()
     assert.deepEqual(calls.reads, [Infinity, 5 * 60 * 1000]);
   }
 });
+
+test('play-by-play is cached raw: forever once OFF, 1 minute while live, else 5 minutes', async () => {
+  const official = { id: 1, gameState: 'OFF', plays: [] };
+  const offCache = makeStoredCache(official);
+  const offService = makeGamecenterService(offCache.cache, null);
+  assert.equal((await offService.getGamePlayByPlay(1)).gameState, 'OFF');
+  assert.equal(offCache.calls.fetches, 0);
+
+  const expectedTtlByCachedState = {
+    LIVE: 60 * 1000,
+    CRIT: 60 * 1000,
+    FUT: 5 * 60 * 1000,
+    FINAL: 5 * 60 * 1000,
+  };
+  for (const [gameState, ttlMs] of Object.entries(expectedTtlByCachedState)) {
+    const { cache, calls } = makeStoredCache({ id: 1, gameState, plays: [] });
+    const service = makeGamecenterService(cache, {
+      id: 1,
+      gameState: 'LIVE',
+      plays: [],
+    });
+    const mapped = await service.getGamePlayByPlay(1);
+    assert.equal(mapped.gameState, 'LIVE');
+    assert.deepEqual(mapped.events, []);
+    assert.deepEqual(calls.reads, [Infinity, ttlMs], gameState);
+  }
+});

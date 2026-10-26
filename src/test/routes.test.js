@@ -175,6 +175,47 @@ test('schedule routes use season, landing, and boxscore cache keys', async () =>
   assert.match(bad.body.error, /Invalid season format/);
 });
 
+test('play-by-play route maps the cached raw payload and 404s a malformed id', async () => {
+  const playByPlay = await getCached(
+    scheduleRouter,
+    '/schedule',
+    '/schedule/playbyplay/2023020001',
+    [CACHE_TYPES.SCHEDULE, 'playbyplay_2023020001'],
+    {
+      id: 2023020001,
+      gameState: 'LIVE',
+      homeTeam: { id: 21, abbrev: 'COL' },
+      awayTeam: { id: 25, abbrev: 'DAL' },
+      plays: [
+        {
+          eventId: 7,
+          typeDescKey: 'goal',
+          homeTeamDefendingSide: 'left',
+          periodDescriptor: { number: 1, periodType: 'REG' },
+          timeInPeriod: '10:00',
+          situationCode: '1551',
+          details: { xCoord: 80, yCoord: 2, eventOwnerTeamId: 21 },
+        },
+        { eventId: 8, typeDescKey: 'stoppage', details: {} },
+      ],
+    },
+  );
+  assert.equal(playByPlay.gameState, 'LIVE');
+  assert.deepEqual(playByPlay.homeTeam, { id: 21, triCode: 'COL' });
+  assert.equal(playByPlay.events.length, 1);
+  assert.equal(playByPlay.events[0].type, 'goal');
+  assert.equal(playByPlay.events[0].teamTriCode, 'COL');
+  assert.equal(playByPlay.events[0].elapsedSeconds, 600);
+
+  resetCacheState();
+  const malformed = await request(
+    makeTestApp('/schedule', scheduleRouter),
+    '/schedule/playbyplay/not-a-game',
+  );
+  assert.equal(malformed.status, 404);
+  assert.deepEqual(cacheState.calls, []);
+});
+
 test('standings uses the season cache key and maps standings', async () => {
   const body = await getCached(
     standingsRouter,
