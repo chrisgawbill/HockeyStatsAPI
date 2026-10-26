@@ -7,6 +7,9 @@ const {
   mapSchedulePayload,
 } = require('#slices/schedule/mappers/scheduleDbMapper.js');
 const { mapGame } = require('#slices/schedule/mappers/scheduleMapper.js');
+const {
+  mapPlayByPlay,
+} = require('#slices/schedule/mappers/playByPlayMapper.js');
 
 /**
  * Upserts a season schedule into `schedule_games`.
@@ -79,6 +82,8 @@ function shortDayOfWeek(gameDate) {
 
 const RECENT_TEAM_GAMES_TTL_MS = 10 * 60 * 1000;
 const GAMECENTER_TTL_MS = 5 * 60 * 1000;
+const LIVE_PLAY_BY_PLAY_TTL_MS = 60 * 1000;
+const LIVE_GAME_STATES = new Set(['LIVE', 'CRIT']);
 
 /**
  * Maps a raw club-schedule payload (season or week) to ScheduleGameContracts
@@ -134,21 +139,26 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
 
   /**
    * Raw gamecenter payload cached under `key`. An official (`OFF`) game never
-   * changes again, so a cached copy of one is served forever; anything else
-   * (preview, live, unofficial FINAL) refetches after GAMECENTER_TTL_MS. Both
-   * cases share one key, and the cache upserts, so keeping finished games
-   * adds no rows.
+   * changes again, so a cached copy of one is served forever; a game cached
+   * while live refetches after `liveTtlMs`, anything else (preview,
+   * unofficial FINAL) after GAMECENTER_TTL_MS. All cases share one key, and
+   * the cache upserts, so keeping finished games adds no rows.
    */
-  async function getGamecenterPayload(key, nhlPath) {
+  async function getGamecenterPayload(
+    key,
+    nhlPath,
+    { liveTtlMs = GAMECENTER_TTL_MS } = {},
+  ) {
     const cachedPayload = await readCache(CACHE_TYPES.SCHEDULE, key, {
       ttlMs: Infinity,
     });
     if (cachedPayload?.gameState === 'OFF') return cachedPayload;
+    const isLive = LIVE_GAME_STATES.has(cachedPayload?.gameState);
     return await getOrFetchCached(
       CACHE_TYPES.SCHEDULE,
       key,
       () => axiosNhl.get(nhlPath).then((response) => response.data),
-      { ttlMs: GAMECENTER_TTL_MS },
+      { ttlMs: isLive ? liveTtlMs : GAMECENTER_TTL_MS },
     );
   }
 
@@ -208,6 +218,20 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
     /** Raw gamecenter boxscore payload for one game (permanent once OFF). */
     async getGameBoxscore(gameID) {
       return await getGamecenterPayload(`boxscore_${gameID}`, `/gamecenter/${gameID}/boxscore`);
+    },
+
+    /**
+     * A game's shots and goals as a PlayByPlayContract. The raw NHL payload is
+     * what gets cached (permanent once OFF, 1 minute while live, otherwise 5
+     * minutes); mapping runs on every read.
+     */
+    async getGamePlayByPlay(gameID) {
+      const playByPlayPayload = await getGamecenterPayload(
+        `playbyplay_${gameID}`,
+        `/gamecenter/${gameID}/play-by-play`,
+        { liveTtlMs: LIVE_PLAY_BY_PLAY_TTL_MS },
+      );
+      return mapPlayByPlay(playByPlayPayload);
     },
 
     /**
