@@ -105,6 +105,26 @@ function mapClubGames(clubSchedulePayload) {
 }
 
 /**
+ * A club's display name and logo from its own season schedule, where every
+ * game carries the club as home or away team. Falls back to the tri-code.
+ */
+function describeClubTeam(clubSchedulePayload, triCode) {
+  for (const rawGame of clubSchedulePayload?.games ?? []) {
+    const clubTeam = [rawGame.homeTeam, rawGame.awayTeam].find(
+      (team) => team?.abbrev === triCode,
+    );
+    if (!clubTeam) continue;
+    const placeName = clubTeam.placeName?.default ?? '';
+    const commonName = clubTeam.commonName?.default ?? '';
+    return {
+      name: `${placeName} ${commonName}`.trim() || triCode,
+      logo: clubTeam.logo ?? null,
+    };
+  }
+  return { name: triCode, logo: null };
+}
+
+/**
  * Lists the weekly-endpoint start dates (YYYY-MM-DD, 7 days apart) that cover a
  * season, from September 1 of its start year through June 30 of its end year.
  */
@@ -159,6 +179,19 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
       key,
       () => axiosNhl.get(nhlPath).then((response) => response.data),
       { ttlMs: isLive ? liveTtlMs : GAMECENTER_TTL_MS },
+    );
+  }
+
+  /** Raw club season schedule, cached 12 hours per team and season; `options` go to the cache. */
+  async function getClubSeasonPayload(triCode, seasonId, options = {}) {
+    return await getOrFetchCached(
+      CACHE_TYPES.SCHEDULE,
+      `team_${triCode}_${seasonId}`,
+      () =>
+        axiosNhl
+          .get(`/club-schedule-season/${triCode}/${seasonId}`)
+          .then((response) => response.data),
+      options,
     );
   }
 
@@ -257,13 +290,9 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * router simply composes both services.
      */
     async getTeamSchedule(triCode, seasonId) {
-      const clubSchedulePayload = await getOrFetchCached(
-        CACHE_TYPES.SCHEDULE,
-        `team_${triCode}_${seasonId}`,
-        () =>
-          axiosNhl
-            .get(`/club-schedule-season/${triCode}/${seasonId}`)
-            .then((response) => response.data),
+      const clubSchedulePayload = await getClubSeasonPayload(
+        triCode,
+        seasonId,
       );
       runServiceTask(`club schedule ${triCode} ${seasonId}`, () =>
         persistSchedule({
@@ -273,6 +302,24 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
         }),
       );
       return { games: mapClubGames(clubSchedulePayload) };
+    },
+
+    /**
+     * One club's season games with its display name and logo, from the same
+     * 12-hour cache as `getTeamSchedule`. `{ fresh: true }` waits for a
+     * refetch instead of serving the cached copy (falling back to it if the
+     * NHL call fails), for when the cached copy is missing a recent final.
+     */
+    async getClubSeason(triCode, seasonId, { fresh = false } = {}) {
+      const clubSchedulePayload = await getClubSeasonPayload(
+        triCode,
+        seasonId,
+        fresh ? { ttlMs: 0 } : {},
+      );
+      return {
+        team: describeClubTeam(clubSchedulePayload, triCode),
+        games: mapClubGames(clubSchedulePayload),
+      };
     },
 
     /**

@@ -136,3 +136,67 @@ test('play-by-play is cached raw: forever once OFF, 1 minute while live, else 5 
     assert.deepEqual(calls.reads, [Infinity, ttlMs], gameState);
   }
 });
+
+test('getClubSeason maps the club season with its name and logo; fresh skips the cached copy', async () => {
+  const clubSchedulePayload = {
+    games: [
+      {
+        id: 2026020001,
+        gameType: 2,
+        gameDate: '2026-10-14',
+        gameState: 'OFF',
+        awayTeam: { abbrev: 'CGY', score: 3 },
+        homeTeam: {
+          abbrev: 'EDM',
+          score: 4,
+          placeName: { default: 'Edmonton' },
+          commonName: { default: 'Oilers' },
+          logo: 'https://assets.nhle.com/logos/nhl/svg/EDM_light.svg',
+        },
+        periodDescriptor: { periodType: 'OT' },
+      },
+    ],
+  };
+  const requests = [];
+  const service = createScheduleService({
+    nhlApi: {
+      axiosNhl: {
+        get: async (url) => {
+          requests.push(url);
+          return { data: clubSchedulePayload };
+        },
+      },
+    },
+    cache: {
+      CACHE_TYPES,
+      getOrFetchCached: async (type, key, fetcher, options) => {
+        requests.push(`${key} ttl=${options.ttlMs}`);
+        return fetcher();
+      },
+    },
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    runServiceTask: noopRunServiceTask,
+  });
+
+  const clubSeason = await service.getClubSeason('EDM', '20262027');
+  assert.deepEqual(clubSeason.team, {
+    name: 'Edmonton Oilers',
+    logo: 'https://assets.nhle.com/logos/nhl/svg/EDM_light.svg',
+  });
+  assert.equal(clubSeason.games.length, 1);
+  assert.equal(clubSeason.games[0].homeScore, 4);
+  assert.equal(clubSeason.games[0].periodType, 'OT');
+  await service.getClubSeason('EDM', '20262027', { fresh: true });
+  assert.deepEqual(requests, [
+    'team_EDM_20262027 ttl=undefined',
+    '/club-schedule-season/EDM/20262027',
+    'team_EDM_20262027 ttl=0',
+    '/club-schedule-season/EDM/20262027',
+  ]);
+
+  // A team missing from its own schedule falls back to the tri-code.
+  assert.deepEqual(
+    (await service.getClubSeason('XYZ', '20262027')).team,
+    { name: 'XYZ', logo: null },
+  );
+});

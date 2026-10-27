@@ -377,8 +377,10 @@ function createPushNotificationService({
   /**
    * Claims and pushes one user's weekly report; does nothing if already
    * claimed. The body describes only the players the user counts in the
-   * push; when none of them played, the week is claimed but not sent, so
-   * unmuting a player later never pushes an old week.
+   * push, then every favorite team that played (a team's mute covers game
+   * alerts only). When none of those players and no team played, the week
+   * is claimed but not sent, so unmuting a player later never pushes an old
+   * week.
    */
   async function pushWeeklyReport({
     userId,
@@ -392,11 +394,14 @@ function createPushNotificationService({
     );
     if (!claimed) return;
     const pushPlayers = await listWeeklyPushPlayers(userId, report);
-    if (!pushPlayers.some((player) => player.played)) return;
+    const reportTeams = report.teams ?? [];
+    const anyPushPlayerPlayed = pushPlayers.some((player) => player.played);
+    const anyTeamPlayed = reportTeams.some((team) => team.weekGames.length > 0);
+    if (!anyPushPlayerPlayed && !anyTeamPlayed) return;
     const payload = {
       kind: 'weekly-report',
       title: `Weekly Player Report · ${report.label}`,
-      body: buildHeadline(pushPlayers),
+      body: buildHeadline(pushPlayers, reportTeams),
       weekStart,
       tag: `wpr-${weekStart}`,
       readToken: sessionJwt.signWeeklyReadToken({ userId, weekStart }),

@@ -81,7 +81,10 @@ function createContainer(overrides = {}) {
     ...platform,
     scheduleService,
   });
-  const weeklyPlayerReportService = createWeeklyPlayerReportService(platform);
+  const weeklyPlayerReportService = createWeeklyPlayerReportService({
+    ...platform,
+    scheduleService,
+  });
   const pushNotificationService = createPushNotificationService({
     ...platform,
     scheduleService,
