@@ -231,9 +231,13 @@ function build({
   notifier,
 } = {}) {
   const db = fakeDb();
-  const scheduleCalls = { season: [], recent: [] };
+  const scheduleCalls = { season: [], recent: [], polls: 0 };
   const gameList = games ?? [game({ gameId: 100 })];
   const scheduleService = {
+    pollGames: async () => {
+      scheduleCalls.polls += 1;
+      return { polled: 0, live: 0, final: 0, failed: 0 };
+    },
     getGameBoxscore: async () => {
       scheduleCalls.boxscores = (scheduleCalls.boxscores ?? 0) + 1;
       if (boxscoreError) throw boxscoreError;
@@ -243,8 +247,8 @@ function build({
       scheduleCalls.season.push(triCode);
       return { games: [] };
     },
-    getRecentTeamGames: async (triCode, options) => {
-      scheduleCalls.recent.push([triCode, Boolean(options?.fresh)]);
+    getRecentTeamGames: async (triCode) => {
+      scheduleCalls.recent.push(triCode);
       return {
         games: gameList.filter(
           (game) => game.homeTeam === triCode || game.awayTeam === triCode,
@@ -679,7 +683,7 @@ test('dispatch removes subscriptions the push service reports gone', async () =>
   assert.equal(errors.length, 1);
 });
 
-test('dispatch loads each distinct team schedule once, fresh', async () => {
+test('dispatch polls the league once and loads each distinct team schedule once', async () => {
   const ctx = build({
     games: [game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL' })],
   });
@@ -690,10 +694,8 @@ test('dispatch loads each distinct team schedule once, fresh', async () => {
   const dispatchSummary = await dispatch(ctx);
   assert.deepEqual(dispatchSummary, { users: 3, sent: 3, removed: 0 });
   assert.deepEqual(ctx.scheduleCalls.season.sort(), ['MTL', 'TOR']);
-  assert.deepEqual(ctx.scheduleCalls.recent.sort(), [
-    ['MTL', true],
-    ['TOR', true],
-  ]);
+  assert.deepEqual(ctx.scheduleCalls.recent.sort(), ['MTL', 'TOR']);
+  assert.equal(ctx.scheduleCalls.polls, 1);
 });
 
 test('hasActiveGames covers live, recent final, old final and upcoming games', () => {
@@ -745,6 +747,7 @@ test('dispatch skips when no game is live or recently final, but not when the sc
     removed: 0,
   });
   assert.equal(quiet.scheduleCalls.recent.length, 0);
+  assert.equal(quiet.scheduleCalls.polls, 0);
 
   const scoreboardDown = build({ scoreboardGames: null });
   await setupUser(scoreboardDown, 7, ['TOR']);

@@ -71,6 +71,12 @@ After Action Reports are computed on request, not by a background job (the hoste
 
 The raw NHL payload is cached (permanently once the game is official, `OFF`; 1 minute while it is live; otherwise 5 minutes) and mapped on every read.
 
+#### Live game poll
+
+`POST /schedule/poll` (`Bearer CRON_SECRET`; 503 when unset, 401 on a bad secret, rate-limited) polls every game in the current season schedule that has started, is not official (`OFF`) yet, and started within the last 12 hours, whoever follows it. For each it refreshes the boxscore cache (at most once a minute per game, shared with `GET /schedule/:gameId`) and writes the game's state, score and period to `schedule_games`, so the table follows each game live and through its final. It returns `{ polled, live, final, failed }`; a failed game is retried on the next poll. The NHL is not called on a night with no started games.
+
+Every schedule read (season, club season, club week) overlays these boxscores, so After Action Reports and push dispatch see a final without fetching per user or per team; dispatch runs the poll itself before reading. A schedule upsert never moves a stored game back to an earlier state (`FUT` < `PRE` < `LIVE`/`CRIT` < `FINAL` < `OFF`), so the hours-old cached season payload cannot undo a polled final. Rows are created by the season schedule persistence; the poll only updates them.
+
 ### Sign-in (Google and Discord)
 
 | Route | Body | Response |
@@ -98,7 +104,7 @@ Migration 004 adds `push_subscriptions`, the sent ledger `after_action_report_pu
 | `POST /api/push/dispatch` | `Bearer CRON_SECRET` | Sends new pushes, returns `{ users, sent, removed }` (or `{ skipped: "no-active-games", ... }`); 401 bad secret, 503 when unconfigured; rate-limited |
 | `POST /api/push/notifier-events` | `Bearer NOTIFIER_CALLBACK_SECRET` | Events from the notifier: `{ type: "subscription.gone", endpoint }` deletes that subscription; unknown types are ignored; 204, 400 without an endpoint, 401 bad secret, 503 when unset |
 
-Both dispatches skip users whose account switch (`GET`/`PUT /api/push/notifications`) is off. Dispatch first checks the public NHL scoreboard (today and yesterday, UTC) and returns `skipped: "no-active-games"` unless a game is live or went final within 4.5 hours of its start; it goes ahead if the scoreboard is unreachable. It then refreshes each distinct favorite team's current-week schedule (bypassing the 10-minute cache), then sends one push per game per user (to all of that user's devices) for unread reports that are not in the ledger, started within the last 12 hours, and involve at least one unmuted favorite. The ledger row is claimed before sending, so overlapping runs cannot double send. If no device got the push (every send failed for a reason other than 404/410, or the notifier could not be reached), the claim is released so the next dispatch tries again; a 404/410 from the push service deletes that subscription. Read tokens are 30-day JWTs (`purpose: "aar-read"`) signed with `SESSION_JWT_SECRET`; they are rejected as session tokens and vice versa. Nothing runs on a timer inside the API.
+Both dispatches skip users whose account switch (`GET`/`PUT /api/push/notifications`) is off. Dispatch first checks the public NHL scoreboard (today and yesterday, UTC) and returns `skipped: "no-active-games"` unless a game is live or went final within 4.5 hours of its start; it goes ahead if the scoreboard is unreachable. It then runs the league-wide live poll (below) and reads each distinct favorite team's schedule, which already carries the polled state, then sends one push per game per user (to all of that user's devices) for unread reports that are not in the ledger, started within the last 12 hours, and involve at least one unmuted favorite. The ledger row is claimed before sending, so overlapping runs cannot double send. If no device got the push (every send failed for a reason other than 404/410, or the notifier could not be reached), the claim is released so the next dispatch tries again; a 404/410 from the push service deletes that subscription. Read tokens are 30-day JWTs (`purpose: "aar-read"`) signed with `SESSION_JWT_SECRET`; they are rejected as session tokens and vice versa. Neither dispatch nor the live poll runs on a timer inside the API; the notifier calls them.
 
 #### Delivery and scheduling: the notifier
 
@@ -106,6 +112,7 @@ Both dispatches skip users whose account switch (`GET`/`PUT /api/push/notificati
 
 The schedules in `notifier/notifier.example.json` are:
 
+- `game-poll`: every minute, 16:00-08:59 UTC, calls `POST /schedule/poll` (no retries; the next minute is the retry).
 - `after-action-push`: every 5 minutes, 16:00-08:59 UTC. With the scoreboard gate, a push lands about 5-10 minutes after the final.
 - `weekly-player-report`: Mondays at 9:00 and 12:00 America/New_York, with catch-up after downtime. The second run only sends what the first could not, because of the ledger.
 

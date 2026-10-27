@@ -16,6 +16,15 @@
       },
       "schedules": [
         {
+          "id": "game-poll",
+          "cron": "* 16-23,0-8 * * *",
+          "timezone": "UTC",
+          "url": "http://127.0.0.1:9000/schedule/poll",
+          "token": "env:HOCKEYSTATS_CRON_SECRET",
+          "timeoutMs": 50000,
+          "retries": 0
+        },
+        {
           "id": "after-action-push",
           "cron": "*/5 16-23,0-8 * * *",
           "timezone": "UTC",

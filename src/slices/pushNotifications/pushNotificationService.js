@@ -1,5 +1,5 @@
-const crypto = require('crypto');
 const createError = require('http-errors');
+const { assertBearerSecret } = require('#platform/bearerSecret.js');
 const repository = require('#slices/pushNotifications/pushNotificationRepository.js');
 const {
   hasActiveGames,
@@ -26,19 +26,6 @@ function readVapidConfig() {
   const subject = process.env.VAPID_SUBJECT;
   if (!publicKey || !privateKey || !subject) return null;
   return { publicKey, privateKey, subject };
-}
-
-/** Length-safe constant-time string comparison. */
-function secretsMatch(candidate, expected) {
-  const candidateDigest = crypto
-    .createHash('sha256')
-    .update(String(candidate))
-    .digest();
-  const expectedDigest = crypto
-    .createHash('sha256')
-    .update(String(expected))
-    .digest();
-  return crypto.timingSafeEqual(candidateDigest, expectedDigest);
 }
 
 /** True for a non-empty string no longer than MAX_FIELD_LENGTH. */
@@ -125,15 +112,6 @@ function buildNotification(report, favorites = [], boxscore) {
     title: 'After Action Report',
     body: [...highlights, score].join(' · '),
   };
-}
-
-/** Throws 503 when `secret` is unset, 401 unless the header is `Bearer <secret>`. */
-function assertBearerSecret(authorizationHeader, secret) {
-  if (!secret) throw createError(503, 'Not configured.');
-  const [scheme, token] = String(authorizationHeader || '').split(' ');
-  if (scheme !== 'Bearer' || !token || !secretsMatch(token, secret)) {
-    throw createError(401, 'Unauthorized');
-  }
 }
 
 /**
@@ -694,8 +672,9 @@ function createPushNotificationService({
      * After Action Report dispatch: pushes each subscribed user's recent
      * finished games for their unmuted favorite teams, once per game. Skips
      * everything when the NHL scoreboard shows no live or recently final game
-     * (and goes ahead when the scoreboard is unreachable). Schedules are loaded
-     * fresh once per distinct team and shared by every user.
+     * (and goes ahead when the scoreboard is unreachable). Runs the
+     * league-wide live poll first, so every team schedule it reads already
+     * carries the newest state; nothing is fetched per user or per team.
      */
     async dispatch() {
       const vapid = requireVapidConfig();
@@ -703,6 +682,10 @@ function createPushNotificationService({
       if (scoreboardGames && !hasActiveGames(scoreboardGames, now())) {
         return { skipped: 'no-active-games', users: 0, sent: 0, removed: 0 };
       }
+      // A failed poll still dispatches from whatever state is cached.
+      await scheduleService.pollGames().catch((error) => {
+        console.error('Push live poll failed:', error?.message ?? error);
+      });
       const userIds = await withTransaction((client) =>
         repository.listSubscriptionUserIds(client),
       );
@@ -712,10 +695,9 @@ function createPushNotificationService({
       const { favoritesByUser, triCodes } = await loadFavoriteTeams(userIds);
       if (triCodes.size === 0) return summary;
 
-      const gamesByTeam = await afterActionReportService.loadGamesByTeam(
-        [...triCodes],
-        { fresh: true },
-      );
+      const gamesByTeam = await afterActionReportService.loadGamesByTeam([
+        ...triCodes,
+      ]);
       const cutoff = now() - MAX_GAME_AGE_MS;
       const boxscores = new Map();
 

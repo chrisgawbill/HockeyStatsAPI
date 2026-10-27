@@ -162,13 +162,13 @@ function createAfterActionReportService({
    * One failing team schedule must not empty the whole inbox, so each team is
    * settled independently and a failure contributes no games.
    */
-  async function loadGamesByTeam(triCodes, { fresh = false } = {}) {
+  async function loadGamesByTeam(triCodes) {
     const seasonId = seasons.getCurrentSeasonId();
     const teamOutcomes = await Promise.allSettled(
       triCodes.map(async (triCode) => {
         const [seasonOutcome, recentOutcome] = await Promise.allSettled([
           scheduleService.getTeamSchedule(triCode, seasonId),
-          scheduleService.getRecentTeamGames(triCode, { fresh }),
+          scheduleService.getRecentTeamGames(triCode),
         ]);
         if (
           seasonOutcome.status === 'rejected' &&
@@ -200,7 +200,7 @@ function createAfterActionReportService({
   /**
    * @param {number|string} userId
    * @param {{ gamesByTeam?: Record<string, any[]>, favorites?: any[] }} [preloaded]
-   *   Lets push dispatch share one schedule load (fetched fresh) across users.
+   *   Lets push dispatch share one schedule load across users.
    */
   async function listReports(userId, preloaded = {}) {
     const favorites = preloaded.favorites ?? (await listFavorites(userId));

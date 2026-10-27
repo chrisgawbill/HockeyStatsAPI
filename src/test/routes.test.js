@@ -353,3 +353,36 @@ test('team routes key caches by team and season', async () => {
   );
   assert.equal(stats.data[0].wins, 50);
 });
+
+test('POST /schedule/poll needs the cron secret and returns the poll summary', async () => {
+  const pollSummary = { polled: 2, live: 1, final: 1, failed: 0 };
+  const app = makeTestApp(
+    '/schedule',
+    createScheduleRouter({
+      scheduleService: { pollGames: async () => pollSummary },
+      pollRateLimiter: (req, res, next) => next(),
+    }),
+  );
+  const previousSecret = process.env.CRON_SECRET;
+  try {
+    delete process.env.CRON_SECRET;
+    assert.equal((await request(app, '/schedule/poll', { method: 'POST' })).status, 503);
+
+    process.env.CRON_SECRET = 'poll-secret';
+    const wrong = await request(app, '/schedule/poll', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer nope' },
+    });
+    assert.equal(wrong.status, 401);
+
+    const ok = await request(app, '/schedule/poll', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer poll-secret' },
+    });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(ok.body, pollSummary);
+  } finally {
+    if (previousSecret === undefined) delete process.env.CRON_SECRET;
+    else process.env.CRON_SECRET = previousSecret;
+  }
+});
