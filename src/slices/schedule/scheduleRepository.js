@@ -1,6 +1,12 @@
 const { toJsonParam } = require('#platform/jsonParam.js');
 const { batchUpsert } = require('#platform/batchSql.js');
 
+/** SQL rank of a game state; mirrors GAME_STATE_PROGRESS in gameStatusOverlay. */
+const gameStateRank = (column) =>
+  `CASE ${column} WHEN 'FUT' THEN 0 WHEN 'PRE' THEN 1 WHEN 'LIVE' THEN 2 WHEN 'CRIT' THEN 2 WHEN 'FINAL' THEN 3 WHEN 'OFF' THEN 4 ELSE -1 END`;
+
+// A schedule payload cached for hours must not move a game the live poll
+// already advanced (LIVE, FINAL, OFF) back to an earlier state.
 const SCHEDULE_GAME_ON_CONFLICT = `
 	ON CONFLICT (game_id)
 	DO UPDATE SET
@@ -35,6 +41,8 @@ const SCHEDULE_GAME_ON_CONFLICT = `
 		broadcasts = EXCLUDED.broadcasts,
 		game_payload = EXCLUDED.game_payload,
 		updated_at = now()
+	WHERE ${gameStateRank('EXCLUDED.game_state')}
+		>= ${gameStateRank('schedule_games.game_state')}
 `;
 
 /**
@@ -103,7 +111,52 @@ async function getScheduleGamesBySeason(client, seasonId) {
   return scheduleGameRows;
 }
 
+/**
+ * Writes polled live statuses onto existing schedule rows (rows come from the
+ * season schedule persistence). Never moves a game back to an earlier state.
+ * Returns the number of rows updated.
+ * @param {{ gameId: number, gameState: string, homeScore: number|null, awayScore: number|null, periodDescriptor: object }[]} statuses
+ */
+async function updateGameStatuses(client, statuses) {
+  if (statuses.length === 0) return 0;
+  const { rowCount } = await client.query(
+    `
+		UPDATE schedule_games AS game
+		SET
+			game_state = polled.game_state,
+			home_score = COALESCE(polled.home_score, game.home_score),
+			away_score = COALESCE(polled.away_score, game.away_score),
+			period_descriptor = COALESCE(polled.period_descriptor, game.period_descriptor),
+			updated_at = now()
+		FROM jsonb_to_recordset($1::jsonb) AS polled(
+			game_id bigint,
+			game_state text,
+			home_score integer,
+			away_score integer,
+			period_descriptor jsonb
+		)
+		WHERE game.game_id = polled.game_id
+			AND ${gameStateRank('polled.game_state')}
+				>= ${gameStateRank('game.game_state')}
+		`,
+    [
+      toJsonParam(
+        statuses.map((status) => ({
+          game_id: status.gameId,
+          game_state: status.gameState,
+          home_score: status.homeScore,
+          away_score: status.awayScore,
+          period_descriptor: status.periodDescriptor,
+        })),
+        [],
+      ),
+    ],
+  );
+  return rowCount;
+}
+
 module.exports = {
   upsertScheduleGames,
+  updateGameStatuses,
   getScheduleGamesBySeason,
 };

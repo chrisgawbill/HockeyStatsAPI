@@ -89,6 +89,11 @@ const RECENT_TEAM_GAMES_TTL_MS = 10 * 60 * 1000;
 const GAMECENTER_TTL_MS = 5 * 60 * 1000;
 const LIVE_PLAY_BY_PLAY_TTL_MS = 60 * 1000;
 const LIVE_GAME_STATES = new Set(['LIVE', 'CRIT']);
+/** The live poll refreshes a started game's boxscore once it is this old. */
+const POLL_TTL_MS = 60 * 1000;
+/** The live poll stops on a game that started longer ago than this, OFF or not. */
+const POLL_WINDOW_MS = 12 * 60 * 60 * 1000;
+const FINAL_GAME_STATES = new Set(['FINAL', 'OFF']);
 
 /**
  * Maps a raw club-schedule payload (season or week) to ScheduleGameContracts
@@ -166,13 +171,13 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
    * Raw gamecenter payload cached under `key`. An official (`OFF`) game never
    * changes again, so a cached copy of one is served forever; a game cached
    * while live refetches after `liveTtlMs`, anything else (preview,
-   * unofficial FINAL) after GAMECENTER_TTL_MS. All cases share one key, and
-   * the cache upserts, so keeping finished games adds no rows.
+   * unofficial FINAL) after `ttlMs`. All cases share one key, and the cache
+   * upserts, so keeping finished games adds no rows.
    */
   async function getGamecenterPayload(
     key,
     nhlPath,
-    { liveTtlMs = GAMECENTER_TTL_MS } = {},
+    { liveTtlMs = GAMECENTER_TTL_MS, ttlMs = GAMECENTER_TTL_MS } = {},
   ) {
     const cachedPayload = await readCache(CACHE_TYPES.SCHEDULE, key, {
       ttlMs: Infinity,
@@ -183,7 +188,7 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
       CACHE_TYPES.SCHEDULE,
       key,
       () => axiosNhl.get(nhlPath).then((response) => response.data),
-      { ttlMs: isLive ? liveTtlMs : GAMECENTER_TTL_MS },
+      { ttlMs: isLive ? liveTtlMs : ttlMs },
     );
   }
 
@@ -237,8 +242,7 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
 
   /**
    * Statuses of every game in the cached current-week club schedules of the
-   * teams playing `games`, keyed by game id. After Action Report dispatch
-   * keeps those weeks fresh every few minutes on game nights.
+   * teams playing `games`, keyed by game id (10-minute cache).
    */
   async function readClubWeekStatuses(games) {
     const triCodes = [
@@ -297,6 +301,32 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
     return games.map((game) => updatedGamesById.get(game.gameId) ?? game);
   }
 
+  /** Raw season schedule from the NHL weekly endpoint, cached per season. */
+  async function getSeasonPayload(seasonId) {
+    return await getOrFetchCached(CACHE_TYPES.SCHEDULE, seasonId, () =>
+      fetchSeasonSchedule(seasonId),
+    );
+  }
+
+  /**
+   * Started games in the current season schedule that are not yet official
+   * (`OFF`) per that schedule and started within POLL_WINDOW_MS. One whose
+   * cached boxscore is already official costs a cache read, no NHL call.
+   */
+  async function listGamesToPoll(now) {
+    const games = mapSeasonSchedule(
+      await getSeasonPayload(seasons.getCurrentSeasonId()),
+    );
+    return games.filter((game) => {
+      const startMs = Date.parse(game.gameTime);
+      return (
+        !isOfficialFinal(game.gameState) &&
+        startMs <= now &&
+        now - startMs <= POLL_WINDOW_MS
+      );
+    });
+  }
+
   return {
     /**
      * Season schedule as `{ games }` of ScheduleGameContract, cached per season,
@@ -305,11 +335,7 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * the request.
      */
     async getSeasonSchedule(seasonId) {
-      const schedulePayload = await getOrFetchCached(
-        CACHE_TYPES.SCHEDULE,
-        seasonId,
-        () => fetchSeasonSchedule(seasonId),
-      );
+      const schedulePayload = await getSeasonPayload(seasonId);
       runServiceTask(`season schedule ${seasonId}`, () =>
         persistSchedule({ seasonId, schedulePayload }),
       );
@@ -378,7 +404,9 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           sourceLabel: 'clubSchedule',
         }),
       );
-      return { games: mapClubGames(clubSchedulePayload) };
+      return {
+        games: await applyStoredGameStatuses(mapClubGames(clubSchedulePayload)),
+      };
     },
 
     /**
@@ -403,9 +431,8 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * One club's games for the current NHL week, on a short TTL. The season
      * club schedule above is cached for 12 hours, which is too stale to notice
      * a game that just went final; After Action Reports overlay this on top.
-     * `{ fresh: true }` skips the cache read (push dispatch) but still refills it.
      */
-    async getRecentTeamGames(triCode, { fresh = false } = {}) {
+    async getRecentTeamGames(triCode) {
       const weekPayload = await getOrFetchCached(
         CACHE_TYPES.SCHEDULE,
         `team_${triCode}_week_now`,
@@ -413,9 +440,66 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           axiosNhl
             .get(`/club-schedule/${triCode}/week/now`)
             .then((response) => response.data),
-        { ttlMs: fresh ? 0 : RECENT_TEAM_GAMES_TTL_MS },
+        { ttlMs: RECENT_TEAM_GAMES_TTL_MS },
       );
-      return { games: mapClubGames(weekPayload) };
+      return { games: await applyStoredGameStatuses(mapClubGames(weekPayload)) };
+    },
+
+    /**
+     * League-wide live poll: refreshes the boxscore of every game in the
+     * current season schedule that has started and is not official yet
+     * (at most once a minute per game, shared with the game page's cache),
+     * then writes each game's state and score to `schedule_games`. Every
+     * schedule read overlays these boxscores, so After Action Reports and
+     * pushes see a final without polling each user's teams. Runs from the
+     * notifier's schedule and at the start of each push dispatch. A failed
+     * game is counted and retried on the next poll.
+     */
+    async pollGames() {
+      const now = Date.now();
+      const games = await listGamesToPoll(now);
+      const outcomes = await Promise.allSettled(
+        games.map((game) =>
+          getGamecenterPayload(
+            `boxscore_${game.gameId}`,
+            `/gamecenter/${game.gameId}/boxscore`,
+            { liveTtlMs: POLL_TTL_MS, ttlMs: POLL_TTL_MS },
+          ),
+        ),
+      );
+
+      const statuses = [];
+      const summary = { polled: games.length, live: 0, final: 0, failed: 0 };
+      outcomes.forEach((outcome, index) => {
+        const status =
+          outcome.status === 'fulfilled'
+            ? readRawGameStatus(outcome.value)
+            : null;
+        if (!status) {
+          summary.failed += 1;
+          console.error(
+            `Live poll ${games[index].gameId} failed:`,
+            outcome.reason?.message ?? 'no game state',
+          );
+          return;
+        }
+        if (LIVE_GAME_STATES.has(status.gameState)) summary.live += 1;
+        if (FINAL_GAME_STATES.has(status.gameState)) summary.final += 1;
+        statuses.push({
+          gameId: games[index].gameId,
+          gameState: status.gameState,
+          homeScore: status.homeScore,
+          awayScore: status.awayScore,
+          periodDescriptor: outcome.value.periodDescriptor ?? null,
+        });
+      });
+
+      runServiceTask('live game statuses', () =>
+        withTransaction((client) =>
+          scheduleGamesRepository.updateGameStatuses(client, statuses),
+        ),
+      );
+      return summary;
     },
 
     persistSchedule,

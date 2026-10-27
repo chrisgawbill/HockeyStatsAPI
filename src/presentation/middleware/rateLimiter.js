@@ -26,4 +26,13 @@ const dispatchRateLimiter = rateLimit({
   handler: respondTooManyRequests,
 });
 
-module.exports = { aiRateLimiter, dispatchRateLimiter };
+/** Limiter for the once-a-minute live game poll: 30 requests per 15 minutes per IP. */
+const pollRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: respondTooManyRequests,
+});
+
+module.exports = { aiRateLimiter, dispatchRateLimiter, pollRateLimiter };

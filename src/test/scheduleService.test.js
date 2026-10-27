@@ -300,3 +300,67 @@ test('getSeasonSchedule never moves a game backwards and leaves unstarted and of
     'team_EDM_week_now ttl=Infinity',
   ]);
 });
+
+test('pollGames refreshes every started, not yet official game in the window and queues the DB write', async () => {
+  const hoursAgo = (hours) =>
+    new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+  const seasonGames = [
+    makeWeeklyGame(1, 'FUT', hoursAgo(1)),
+    makeWeeklyGame(2, 'OFF', hoursAgo(2)),
+    makeWeeklyGame(3, 'FUT', UPCOMING),
+    makeWeeklyGame(4, 'FINAL', hoursAgo(13)),
+    makeWeeklyGame(5, 'LIVE', hoursAgo(3)),
+    makeWeeklyGame(6, 'FINAL', hoursAgo(4)),
+  ];
+  const nhlBoxscores = {
+    1: { id: 1, gameState: 'LIVE', homeTeam: { score: 1 }, awayTeam: { score: 0 }, periodDescriptor: { number: 2 } },
+    6: { id: 6, gameState: 'OFF', homeTeam: { score: 2 }, awayTeam: { score: 3 }, periodDescriptor: { periodType: 'SO' } },
+  };
+  const requestedPaths = [];
+  const boxscoreTtls = [];
+  const serviceTasks = [];
+  const service = createScheduleService({
+    nhlApi: {
+      axiosNhl: {
+        get: async (path) => {
+          requestedPaths.push(path);
+          const gameId = path.match(/\/gamecenter\/(\d+)\/boxscore/)[1];
+          if (!nhlBoxscores[gameId]) throw new Error('NHL down');
+          return { data: nhlBoxscores[gameId] };
+        },
+      },
+    },
+    cache: {
+      CACHE_TYPES,
+      getOrFetchCached: async (type, key, fetcher, options) => {
+        if (key === '20262027') {
+          return { gameWeek: [{ date: '2026-10-27', games: seasonGames }] };
+        }
+        boxscoreTtls.push(options.ttlMs);
+        return fetcher();
+      },
+      readCache: async () => null,
+      writeCache: async () => {},
+    },
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    runServiceTask: (label, task) => serviceTasks.push(label),
+  });
+
+  const originalError = console.error;
+  console.error = () => {};
+  let summary;
+  try {
+    summary = await service.pollGames();
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.deepEqual(summary, { polled: 3, live: 1, final: 1, failed: 1 });
+  assert.deepEqual(requestedPaths.sort(), [
+    '/gamecenter/1/boxscore',
+    '/gamecenter/5/boxscore',
+    '/gamecenter/6/boxscore',
+  ]);
+  assert.deepEqual(boxscoreTtls, [60000, 60000, 60000]);
+  assert.deepEqual(serviceTasks, ['live game statuses']);
+});
