@@ -137,6 +137,15 @@ The dispatch fetches the league schedule for the week (`/schedule/{monday}`); if
 
 The notifier's `weekly-player-report` schedule calls the weekly dispatch on Monday mornings, Eastern time; see the notifier section above.
 
+### Rivalries
+
+| Route | Purpose |
+| --- | --- |
+| `GET /rivalries` | Every enabled rivalry: `{ rivalries: [{ teams: [triCode, triCode], tier, displayName }] }` |
+| `GET /rivalries/:triCode` | The same shape, only that team's rivalries; `[]` when it has none; 400 for a malformed code |
+
+Rivalries (migration 011, `team_rivalries`) are site-wide, unordered team pairs: `teams` is alphabetical, `tier` is `primary` or `secondary`, `displayName` is a name like "Battle of Alberta" or `null`. Each pair is stored once with the lower team id first, so self-pairs and reversed duplicates are rejected. Disabled pairs are never returned, and nothing is inferred. The seed is the Product Owner-approved list.
+
 ## Caching
 
 NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for players, rosters, standings, stat leaders and teams, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 1-minute play-by-play while a game is live, 10-minute current week).
