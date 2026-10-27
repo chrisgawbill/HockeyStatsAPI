@@ -10,6 +10,11 @@ const { mapGame } = require('#slices/schedule/mappers/scheduleMapper.js');
 const {
   mapPlayByPlay,
 } = require('#slices/schedule/mappers/playByPlayMapper.js');
+const {
+  applyNewestGameStatus,
+  isOfficialFinal,
+  readRawGameStatus,
+} = require('#slices/schedule/mappers/gameStatusOverlay.js');
 
 /**
  * Upserts a season schedule into `schedule_games`.
@@ -225,9 +230,77 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
     return { gameWeek: allGameWeeks };
   }
 
+  /** A cached schedule-type payload at any age, without fetching; null when absent. */
+  function readStoredPayload(key) {
+    return readCache(CACHE_TYPES.SCHEDULE, key, { ttlMs: Infinity });
+  }
+
+  /**
+   * Statuses of every game in the cached current-week club schedules of the
+   * teams playing `games`, keyed by game id. After Action Report dispatch
+   * keeps those weeks fresh every few minutes on game nights.
+   */
+  async function readClubWeekStatuses(games) {
+    const triCodes = [
+      ...new Set(games.flatMap((game) => [game.homeTeam, game.awayTeam])),
+    ].filter(Boolean);
+    const weekPayloads = await Promise.all(
+      triCodes.map((triCode) => readStoredPayload(`team_${triCode}_week_now`)),
+    );
+
+    const statusesByGameId = new Map();
+    for (const weekPayload of weekPayloads) {
+      for (const rawGame of weekPayload?.games ?? []) {
+        const status = readRawGameStatus(rawGame);
+        if (!status) continue;
+        const gameStatuses = statusesByGameId.get(rawGame.id) ?? [];
+        statusesByGameId.set(rawGame.id, [...gameStatuses, status]);
+      }
+    }
+    return statusesByGameId;
+  }
+
+  /**
+   * Brings each started, not yet official game in a season schedule up to the
+   * newest status already in the cache: its boxscore and landing payloads and
+   * its teams' current weeks. The season schedule itself is cached for hours,
+   * so without this a game that the game page already shows live or final
+   * stays FUT or LIVE on the schedule. Reads the cache only; never calls the
+   * NHL.
+   */
+  async function applyStoredGameStatuses(games) {
+    const now = Date.now();
+    const startedGames = games.filter(
+      (game) =>
+        !isOfficialFinal(game.gameState) && Date.parse(game.gameTime) <= now,
+    );
+    if (startedGames.length === 0) return games;
+
+    const clubWeekStatuses = await readClubWeekStatuses(startedGames);
+    const updatedGames = await Promise.all(
+      startedGames.map(async (game) => {
+        const [boxscorePayload, landingPayload] = await Promise.all([
+          readStoredPayload(`boxscore_${game.gameId}`),
+          readStoredPayload(`landing_${game.gameId}`),
+        ]);
+        return applyNewestGameStatus(game, [
+          readRawGameStatus(boxscorePayload),
+          readRawGameStatus(landingPayload),
+          ...(clubWeekStatuses.get(game.gameId) ?? []),
+        ]);
+      }),
+    );
+
+    const updatedGamesById = new Map(
+      updatedGames.map((game) => [game.gameId, game]),
+    );
+    return games.map((game) => updatedGamesById.get(game.gameId) ?? game);
+  }
+
   return {
     /**
-     * Season schedule as `{ games }` of ScheduleGameContract, cached per season.
+     * Season schedule as `{ games }` of ScheduleGameContract, cached per season,
+     * with started games brought up to the newest status in the cache.
      * Persisting the raw payload is fire-and-forget so a DB hiccup cannot fail
      * the request.
      */
@@ -240,7 +313,11 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
       runServiceTask(`season schedule ${seasonId}`, () =>
         persistSchedule({ seasonId, schedulePayload }),
       );
-      return { games: mapSeasonSchedule(schedulePayload) };
+      return {
+        games: await applyStoredGameStatuses(
+          mapSeasonSchedule(schedulePayload),
+        ),
+      };
     },
 
     /** Raw gamecenter landing payload for one game (permanent once OFF). */

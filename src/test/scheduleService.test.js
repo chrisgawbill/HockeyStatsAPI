@@ -200,3 +200,103 @@ test('getClubSeason maps the club season with its name and logo; fresh skips the
     { name: 'XYZ', logo: null },
   );
 });
+
+/** One raw weekly-schedule game between EDM (home) and CGY. */
+function makeWeeklyGame(id, gameState, startTimeUTC, scores = {}) {
+  return {
+    id,
+    gameState,
+    startTimeUTC,
+    gameType: 2,
+    ticketsLink: 'https://tickets.example/',
+    homeTeam: { abbrev: 'EDM', score: scores.home },
+    awayTeam: { abbrev: 'CGY', score: scores.away },
+  };
+}
+
+/** Season-schedule service over a cache holding `seasonGames` plus `storedPayloads` by key. */
+function makeSeasonService(seasonGames, storedPayloads) {
+  const readKeys = [];
+  const service = createScheduleService({
+    nhlApi: { axiosNhl: { get: async () => ({ data: null }) } },
+    cache: {
+      CACHE_TYPES,
+      getOrFetchCached: async () => ({
+        gameWeek: [{ date: '2026-10-27', dayAbbrev: 'TUE', games: seasonGames }],
+      }),
+      readCache: async (type, key, options) => {
+        readKeys.push(`${key} ttl=${options.ttlMs}`);
+        return storedPayloads[key] ?? null;
+      },
+      writeCache: async () => {},
+    },
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    runServiceTask: noopRunServiceTask,
+  });
+  return { service, readKeys };
+}
+
+const STARTED = '2020-01-01T00:00:00Z';
+const UPCOMING = '2999-01-01T00:00:00Z';
+
+test('getSeasonSchedule marks a started game final from its cached boxscore', async () => {
+  const { service } = makeSeasonService([makeWeeklyGame(1, 'FUT', STARTED)], {
+    boxscore_1: {
+      id: 1,
+      gameState: 'OFF',
+      homeTeam: { score: 3 },
+      awayTeam: { score: 2 },
+      periodDescriptor: { periodType: 'OT' },
+    },
+    landing_1: { id: 1, gameState: 'LIVE', homeTeam: { score: 2 }, awayTeam: { score: 2 } },
+  });
+  const [game] = (await service.getSeasonSchedule('20262027')).games;
+  assert.equal(game.gameState, 'OFF');
+  assert.equal(game.homeScore, 3);
+  assert.equal(game.awayScore, 2);
+  assert.equal(game.periodType, 'OT');
+  assert.equal(game.ticketLink, '');
+});
+
+test('getSeasonSchedule marks a started game live from a cached club week, keeping the later score', async () => {
+  const { service } = makeSeasonService([makeWeeklyGame(1, 'FUT', STARTED)], {
+    landing_1: { id: 1, gameState: 'LIVE', homeTeam: { score: 0 }, awayTeam: { score: 1 } },
+    team_EDM_week_now: {
+      games: [makeWeeklyGame(1, 'LIVE', STARTED, { home: 2, away: 1 })],
+    },
+  });
+  const [game] = (await service.getSeasonSchedule('20262027')).games;
+  assert.equal(game.gameState, 'LIVE');
+  assert.equal(game.homeScore, 2);
+  assert.equal(game.awayScore, 1);
+});
+
+test('getSeasonSchedule never moves a game backwards and leaves unstarted and official games alone', async () => {
+  const { service, readKeys } = makeSeasonService(
+    [
+      makeWeeklyGame(1, 'FINAL', STARTED, { home: 4, away: 1 }),
+      makeWeeklyGame(2, 'OFF', STARTED, { home: 1, away: 0 }),
+      makeWeeklyGame(3, 'FUT', UPCOMING),
+    ],
+    {
+      boxscore_1: { id: 1, gameState: 'LIVE', homeTeam: { score: 3 }, awayTeam: { score: 1 } },
+      boxscore_3: { id: 3, gameState: 'LIVE' },
+    },
+  );
+  const games = (await service.getSeasonSchedule('20262027')).games;
+  assert.deepEqual(
+    games.map(({ gameState, homeScore }) => [gameState, homeScore]),
+    [
+      ['FINAL', 4],
+      ['OFF', 1],
+      ['FUT', null],
+    ],
+  );
+  // Only game 1 (started, not official) is looked up, at any cached age.
+  assert.deepEqual(readKeys.sort(), [
+    'boxscore_1 ttl=Infinity',
+    'landing_1 ttl=Infinity',
+    'team_CGY_week_now ttl=Infinity',
+    'team_EDM_week_now ttl=Infinity',
+  ]);
+});
