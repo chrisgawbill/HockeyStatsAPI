@@ -41,6 +41,9 @@ const {
   createPushNotificationService,
 } = require('#slices/pushNotifications/pushNotificationService.js');
 const { createRivalryService } = require('#slices/rivalries/rivalryService.js');
+const {
+  createRinkQuestProfileService,
+} = require('#slices/rinkQuestProfiles/rinkQuestProfileService.js');
 
 /**
  * Composition root: the one place that knows which concrete platform adapters
@@ -93,6 +96,10 @@ function createContainer(overrides = {}) {
     weeklyPlayerReportService,
   });
   const rivalryService = createRivalryService(platform);
+  const rinkQuestProfileService = createRinkQuestProfileService({
+    ...platform,
+    rosterService,
+  });
 
   return {
     ...platform,
@@ -110,6 +117,7 @@ function createContainer(overrides = {}) {
     weeklyPlayerReportService,
     pushNotificationService,
     rivalryService,
+    rinkQuestProfileService,
   };
 }
 
