@@ -40,6 +40,7 @@ const {
 const {
   createPushNotificationService,
 } = require('#slices/pushNotifications/pushNotificationService.js');
+const { createRivalryService } = require('#slices/rivalries/rivalryService.js');
 
 /**
  * Composition root: the one place that knows which concrete platform adapters
@@ -91,6 +92,7 @@ function createContainer(overrides = {}) {
     afterActionReportService,
     weeklyPlayerReportService,
   });
+  const rivalryService = createRivalryService(platform);
 
   return {
     ...platform,
@@ -107,6 +109,7 @@ function createContainer(overrides = {}) {
     afterActionReportService,
     weeklyPlayerReportService,
     pushNotificationService,
+    rivalryService,
   };
 }
 

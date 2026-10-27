@@ -27,6 +27,7 @@ const {
   createFavoritePlayersRouter,
   createWeeklyPlayerReportsRouter,
 } = require('#presentation/routes/weeklyPlayerReports.js');
+const { createRivalriesRouter } = require('#presentation/routes/rivalries.js');
 
 /**
  * CORS settings. 'Authorization' is allowed for the bearer-token Google-account
@@ -67,6 +68,7 @@ function createApp(container) {
   app.use('/player', createPlayerRouter(container));
   app.use('/team', createTeamRouter(container));
   app.use('/schedule', createScheduleRouter(container));
+  app.use('/rivalries', createRivalriesRouter(container));
   app.use('/python-service', createAiRouter(container));
   app.use('/api/auth', createAuthRouter(container));
   app.use('/api/board-game', createBoardGameRouter(container));
