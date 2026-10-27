@@ -9,6 +9,8 @@ const REPORT_TIME_ZONE = 'America/New_York';
 const COUNTED_GAME_TYPES = new Set([2, 3]);
 const COMPLETED_GAME_STATES = new Set(['OFF', 'FINAL']);
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const NO_PLAYER_PLAYED = 'Your favorite players did not play this week.';
+const FAN_TIER_ORDER = ['diehard', 'fan', 'curious'];
 const MONTHS = [
   'Jan',
   'Feb',
@@ -270,15 +272,14 @@ function performanceLine(player) {
 }
 
 /**
- * Push body: the best skater by points (then goals), else the best goalie by
- * wins, else the first player who played; plus " and N more" for the other
- * players who played.
+ * The players' sentence of the headline: the best skater by points (then
+ * goals), else the best goalie by wins, else the first player who played;
+ * plus " and N more" for the other players who played. Null with no players.
  */
-function buildHeadline(players) {
+function describePlayers(players) {
+  if (players.length === 0) return null;
   const played = players.filter((player) => player.played);
-  if (played.length === 0) {
-    return 'Your favorite players did not play this week.';
-  }
+  if (played.length === 0) return NO_PLAYER_PLAYED;
   const scoringSkaters = played
     .filter((player) => player.type === 'skater' && player.stats.points > 0)
     .sort(
@@ -294,24 +295,172 @@ function buildHeadline(players) {
   return `${topPlayer.name}: ${performanceLine(topPlayer)}${otherCount > 0 ? ` and ${otherCount} more` : ''}`;
 }
 
+/** A team's week record as W-L-OTL, e.g. "2-0-1". */
+function formatWeekRecord(weekGames) {
+  const countOutcome = (outcome) =>
+    weekGames.filter((weekGame) => weekGame.outcome === outcome).length;
+  return `${countOutcome('W')}-${countOutcome('L')}-${countOutcome('OTL')}`;
+}
+
+/** The teams' sentence, e.g. "Teams: COL 2-0-1, DAL 1-2-0."; null when no team played. */
+function describeTeams(teams) {
+  const teamsThatPlayed = teams.filter((team) => team.weekGames.length > 0);
+  if (teamsThatPlayed.length === 0) return null;
+  const records = teamsThatPlayed.map(
+    (team) => `${team.triCode} ${formatWeekRecord(team.weekGames)}`,
+  );
+  return `Teams: ${records.join(', ')}.`;
+}
+
 /**
- * Builds one user's frozen report, or null when none of the user's favorites
- * played and none of their teams played (the per-user skip).
+ * Headline and push body: the players' sentence, then the teams' sentence
+ * when any team played. Without a team line it reads exactly as before teams
+ * were added.
+ */
+function buildHeadline(players, teams = []) {
+  const playersSentence = describePlayers(players);
+  const teamsSentence = describeTeams(teams);
+  if (!teamsSentence) return playersSentence ?? NO_PLAYER_PLAYED;
+  if (!playersSentence) return teamsSentence;
+  const separator = playersSentence.endsWith('.') ? ' ' : '. ';
+  return `${playersSentence}${separator}${teamsSentence}`;
+}
+
+/** Orders favorite teams by fan tier (diehard first), keeping favorite order within a tier. */
+function sortByFanTier(favoriteTeams) {
+  return [...favoriteTeams].sort(
+    (teamA, teamB) =>
+      FAN_TIER_ORDER.indexOf(teamA.tier) - FAN_TIER_ORDER.indexOf(teamB.tier),
+  );
+}
+
+/** True when a club schedule game has a final score on both sides. */
+function hasFinalScore(clubGame) {
+  return (
+    COMPLETED_GAME_STATES.has(clubGame.gameState) &&
+    Number.isFinite(clubGame.homeScore) &&
+    Number.isFinite(clubGame.awayScore)
+  );
+}
+
+/**
+ * The team's counted games in the week, from its club season schedule: only
+ * games the league week schedule lists as completed regular-season or
+ * playoff games, in date order.
+ */
+function listTeamWeekGames(clubGames, schedule) {
+  return clubGames
+    .filter(
+      (clubGame) =>
+        schedule.gamesById.has(Number(clubGame.gameId)) &&
+        hasFinalScore(clubGame),
+    )
+    .sort((gameA, gameB) => gameA.date.localeCompare(gameB.date));
+}
+
+/**
+ * True when the club schedule already shows a final score for every game the
+ * league week schedule completed for this team. A cached club schedule from
+ * before the weekend can be missing Sunday's finals.
+ */
+function isClubScheduleCurrent(triCode, clubGames, schedule) {
+  const finishedClubGameIds = new Set(
+    clubGames.filter(hasFinalScore).map((clubGame) => Number(clubGame.gameId)),
+  );
+  for (const [gameId, leagueGame] of schedule.gamesById) {
+    const teamPlayed =
+      leagueGame.homeTeam === triCode || leagueGame.awayTeam === triCode;
+    if (teamPlayed && !finishedClubGameIds.has(gameId)) return false;
+  }
+  return true;
+}
+
+/** One week game from the team's side, with W, L, or OTL for an overtime or shootout loss. */
+function toTeamWeekGame(clubGame, triCode) {
+  const isHome = clubGame.homeTeam === triCode;
+  const teamScore = isHome ? clubGame.homeScore : clubGame.awayScore;
+  const opponentScore = isHome ? clubGame.awayScore : clubGame.homeScore;
+  const isExtraTimeLoss =
+    teamScore < opponentScore &&
+    (clubGame.periodType === 'OT' || clubGame.periodType === 'SO');
+  return {
+    gameId: Number(clubGame.gameId),
+    date: clubGame.date,
+    opponent: isHome ? clubGame.awayTeam : clubGame.homeTeam,
+    isHome,
+    teamScore,
+    opponentScore,
+    outcome: teamScore > opponentScore ? 'W' : isExtraTimeLoss ? 'OTL' : 'L',
+  };
+}
+
+/** One game in the fields the frontend's Team Form reads. */
+function toTeamFormGame(clubGame) {
+  return {
+    date: clubGame.date,
+    gameState: clubGame.gameState,
+    homeTeam: clubGame.homeTeam,
+    awayTeam: clubGame.awayTeam,
+    homeScore: clubGame.homeScore,
+    awayScore: clubGame.awayScore,
+    periodType: clubGame.periodType ?? null,
+  };
+}
+
+/**
+ * The report's favorite teams in fan-tier order, each with the week's games
+ * and, for Team Form, the week's regular-season games (Product Owner,
+ * 2026-10-27: the report covers only its own week).
+ *
+ * @param {{
+ *   favoriteTeams: { triCode: string, tier: string, label: string|null }[],
+ *   clubSeasonsByTeam: Map<string, { team: { name: string, logo: string|null }, games: any[] }>,
+ *   schedule: ReturnType<typeof summarizeWeekSchedule>,
+ * }} input
+ */
+function buildReportTeams({ favoriteTeams, clubSeasonsByTeam, schedule }) {
+  return sortByFanTier(favoriteTeams).map((favoriteTeam) => {
+    const clubSeason = clubSeasonsByTeam.get(favoriteTeam.triCode);
+    const weekClubGames = listTeamWeekGames(clubSeason?.games ?? [], schedule);
+    return {
+      triCode: favoriteTeam.triCode,
+      name: clubSeason?.team.name ?? favoriteTeam.triCode,
+      logo: clubSeason?.team.logo ?? null,
+      tier: favoriteTeam.tier,
+      label: favoriteTeam.label,
+      weekGames: weekClubGames.map((clubGame) =>
+        toTeamWeekGame(clubGame, favoriteTeam.triCode),
+      ),
+      formGames: weekClubGames
+        .filter((clubGame) => !clubGame.isPlayoff)
+        .map(toTeamFormGame),
+    };
+  });
+}
+
+/**
+ * Builds one user's frozen report, or null when none of the user's favorite
+ * players, their players' teams, or their favorite teams played (the per-user
+ * skip).
  *
  * @param {{
  *   weekStart: string,
  *   favorites: { playerId: number, name: string, teamTriCode: string|null, position: string|null, headshot: string|null }[],
+ *   favoriteTeams?: { triCode: string, tier: string, label: string|null }[],
  *   skaterRows: any[],
  *   goalieRows: any[],
  *   schedule: ReturnType<typeof summarizeWeekSchedule>,
+ *   clubSeasonsByTeam?: Map<string, { team: { name: string, logo: string|null }, games: any[] }>,
  * }} input
  */
 function buildWeeklyReport({
   weekStart,
   favorites,
+  favoriteTeams = [],
   skaterRows,
   goalieRows,
   schedule,
+  clubSeasonsByTeam = new Map(),
 }) {
   const gameRowsByPlayer = new Map();
   for (const gameRow of [...skaterRows, ...goalieRows]) {
@@ -346,17 +495,20 @@ function buildWeeklyReport({
     };
   });
 
-  const anyActivity = players.some(
-    (player) => player.played || player.teamGames > 0,
-  );
+  const teams = buildReportTeams({ favoriteTeams, clubSeasonsByTeam, schedule });
+
+  const anyActivity =
+    players.some((player) => player.played || player.teamGames > 0) ||
+    teams.some((team) => team.weekGames.length > 0);
   if (!anyActivity) return null;
 
   return {
     weekStart,
     weekEnd: weekEndOf(weekStart),
     label: formatWeekLabel(weekStart),
-    headline: buildHeadline(players),
+    headline: buildHeadline(players, teams),
     players,
+    teams,
   };
 }
 
@@ -371,5 +523,6 @@ module.exports = {
   summarizeWeekSchedule,
   normalizeGameRows,
   buildHeadline,
+  isClubScheduleCurrent,
   buildWeeklyReport,
 };

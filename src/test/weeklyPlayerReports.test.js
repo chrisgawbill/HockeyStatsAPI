@@ -3,12 +3,15 @@ const { beforeEach, test } = require('node:test');
 
 const { makeTestApp, jsonRequest: request } = require('./testApp.js');
 const sessionJwt = require('#platform/sessionJwt.js');
+const seasons = require('#platform/seasonHelper.js');
 const {
   previousWeekStart,
   formatWeekLabel,
   isWeekStart,
   summarizeWeekSchedule,
   normalizeGameRows,
+  buildHeadline,
+  isClubScheduleCurrent,
   buildWeeklyReport,
 } = require('#slices/weeklyPlayerReports/weeklyReportBuilder.js');
 const {
@@ -74,6 +77,53 @@ const NORMAL_WEEK = {
   ],
 };
 
+/** A club schedule game in the mapped ScheduleGameContract fields the report reads. */
+function clubGame(gameId, date, away, home, awayScore, homeScore, extra = {}) {
+  return {
+    gameId,
+    date,
+    gameState: 'OFF',
+    awayTeam: away,
+    homeTeam: home,
+    awayScore,
+    homeScore,
+    periodType: 'REG',
+    isPlayoff: false,
+    ...extra,
+  };
+}
+
+/**
+ * Club season schedules (mapped) for the favorite teams. EDM: an OT win and a
+ * shootout loss in the week, plus games outside it; TOR: a preseason game and
+ * a regulation loss; VAN: nothing in the week.
+ */
+const CLUB_SEASONS = {
+  EDM: {
+    team: { name: 'Edmonton Oilers', logo: 'https://assets.example/EDM.svg' },
+    games: [
+      clubGame(90, '2026-10-09', 'VAN', 'EDM', 2, 5),
+      clubGame(2, '2026-10-18', 'EDM', 'BOS', 2, 3, { periodType: 'SO' }),
+      clubGame(1, '2026-10-14', 'CGY', 'EDM', 3, 4, { periodType: 'OT' }),
+      clubGame(95, '2026-10-20', 'EDM', 'SEA', null, null, {
+        gameState: 'FUT',
+        periodType: null,
+      }),
+    ],
+  },
+  TOR: {
+    team: { name: 'Toronto Maple Leafs', logo: 'https://assets.example/TOR.svg' },
+    games: [
+      clubGame(3, '2026-10-13', 'TOR', 'MTL', 2, 1),
+      clubGame(4, '2026-10-16', 'OTT', 'TOR', 4, 1),
+    ],
+  },
+  VAN: {
+    team: { name: 'Vancouver Canucks', logo: 'https://assets.example/VAN.svg' },
+    games: [clubGame(90, '2026-10-09', 'VAN', 'EDM', 2, 5)],
+  },
+};
+
 const BREAK_WEEK = {
   gameWeek: [
     { date: '2026-10-12', games: [scheduleGame(3, 'TOR', 'MTL', 1)] },
@@ -132,6 +182,7 @@ const GOALIE_ROWS = [
 function fakeDb() {
   const db = {
     favorites: [], // { user_id, player_id, full_name, ..., created_at }
+    favoriteTeams: [], // { user_id, team_tri_code, tier, label }
     reports: new Map(), // `${user}:${week}` -> { payload, created_at, read_at }
     ledger: new Set(),
     pushOff: new Set(),
@@ -199,6 +250,9 @@ function fakeDb() {
             !(favorite.user_id === params[0] && favorite.player_id === String(params[1])),
         );
         return { rows: [] };
+      }
+      if (sql.includes('FROM favorite_teams')) {
+        return { rows: [...db.favoriteTeams] };
       }
       if (sql.includes('FROM favorite_players') && sql.includes('WHERE')) {
         return {
@@ -339,11 +393,38 @@ function statsClient(rows, calls, fail) {
   };
 }
 
-function build({ schedule = NORMAL_WEEK, sendImpl } = {}) {
+/**
+ * Schedule service stand-in serving CLUB_SEASONS. A team in `staleTeams`
+ * serves its cached copy without the week's finals until fetched fresh.
+ */
+function fakeScheduleService(calls, fail, staleTeams) {
+  return {
+    async getClubSeason(triCode, seasonId, { fresh = false } = {}) {
+      calls.push({ triCode, seasonId, fresh });
+      if (fail.teams) throw new Error('club schedule down');
+      const clubSeason = CLUB_SEASONS[triCode] ?? {
+        team: { name: triCode, logo: null },
+        games: [],
+      };
+      if (!staleTeams.has(triCode) || fresh) return clubSeason;
+      return {
+        ...clubSeason,
+        games: clubSeason.games.map((clubGame) => ({
+          ...clubGame,
+          gameState: 'FUT',
+          homeScore: null,
+          awayScore: null,
+        })),
+      };
+    },
+  };
+}
+
+function build({ schedule = NORMAL_WEEK, sendImpl, staleTeams = [] } = {}) {
   const db = fakeDb();
   const cache = fakeCache();
-  const calls = { nhl: [], skaters: [], goalies: [] };
-  const fail = { stats: false };
+  const calls = { nhl: [], skaters: [], goalies: [], clubSeasons: [] };
+  const fail = { stats: false, teams: false };
   const nhlApi = {
     axiosNhl: {
       async get(url) {
@@ -388,6 +469,12 @@ function build({ schedule = NORMAL_WEEK, sendImpl } = {}) {
     withTransaction: db.withTransaction,
     nhlApi,
     cache,
+    seasons,
+    scheduleService: fakeScheduleService(
+      calls.clubSeasons,
+      fail,
+      new Set(staleTeams),
+    ),
   });
   const sent = [];
   const webPush = {
@@ -630,6 +717,239 @@ test('traded player, goalie-only and did-not-play headlines, and the per-user sk
     }),
     null,
   );
+});
+
+// --- Favorite teams (API-WPR-02) --------------------------------------------
+
+const CLUB_SEASONS_BY_TEAM = new Map(Object.entries(CLUB_SEASONS));
+
+/** A favorite team as the dispatch passes it to the builder. */
+function favoriteTeamOf(triCode, tier = 'fan', label = null) {
+  return { triCode, tier, label };
+}
+
+/** A favorite_teams row in the fake database. */
+function favoriteTeamRow(userId, triCode, tier = 'fan', label = null) {
+  return { user_id: userId, team_tri_code: triCode, tier, label };
+}
+
+const EDM_WEEK_GAMES = [
+  {
+    gameId: 1,
+    date: '2026-10-14',
+    opponent: 'CGY',
+    isHome: true,
+    teamScore: 4,
+    opponentScore: 3,
+    outcome: 'W',
+  },
+  {
+    gameId: 2,
+    date: '2026-10-18',
+    opponent: 'BOS',
+    isHome: false,
+    teamScore: 2,
+    opponentScore: 3,
+    outcome: 'OTL',
+  },
+];
+
+const EDM_FORM_GAMES = [
+  {
+    date: '2026-10-14',
+    gameState: 'OFF',
+    homeTeam: 'EDM',
+    awayTeam: 'CGY',
+    homeScore: 4,
+    awayScore: 3,
+    periodType: 'OT',
+  },
+  {
+    date: '2026-10-18',
+    gameState: 'OFF',
+    homeTeam: 'BOS',
+    awayTeam: 'EDM',
+    homeScore: 3,
+    awayScore: 2,
+    periodType: 'SO',
+  },
+];
+
+test('API-WPR-02 Verify: team week records, OT/SO losses, a team with no games, fan-tier order', () => {
+  const report = buildWeeklyReport({
+    weekStart: WEEK,
+    favorites: [],
+    favoriteTeams: [
+      favoriteTeamOf('VAN'),
+      favoriteTeamOf('TOR', 'curious'),
+      favoriteTeamOf('EDM', 'diehard', 'Since 84'),
+    ],
+    skaterRows: [],
+    goalieRows: [],
+    schedule: summarizeWeekSchedule(NORMAL_WEEK, WEEK),
+    clubSeasonsByTeam: CLUB_SEASONS_BY_TEAM,
+  });
+  assert.deepEqual(
+    report.teams.map((team) => team.triCode),
+    ['EDM', 'VAN', 'TOR'],
+  );
+  const [edm, van, tor] = report.teams;
+  // An OT win is a W and a shootout loss an OTL; games outside the week and
+  // not yet played are left out.
+  assert.deepEqual(edm, {
+    triCode: 'EDM',
+    name: 'Edmonton Oilers',
+    logo: 'https://assets.example/EDM.svg',
+    tier: 'diehard',
+    label: 'Since 84',
+    weekGames: EDM_WEEK_GAMES,
+    formGames: EDM_FORM_GAMES,
+  });
+  // No games this week: the team is still listed, with nothing to show.
+  assert.deepEqual(van.weekGames, []);
+  assert.deepEqual(van.formGames, []);
+  assert.equal(van.tier, 'fan');
+  // A regulation loss is an L; the preseason game does not count.
+  assert.deepEqual(
+    tor.weekGames.map((weekGame) => [weekGame.gameId, weekGame.outcome]),
+    [[4, 'L']],
+  );
+  assert.equal(tor.formGames.length, 1);
+  assert.equal(report.headline, 'Teams: EDM 1-0-1, TOR 0-1-0.');
+
+  // An overtime playoff loss is an OTL in the week but not a Team Form game.
+  const playoffWeek = summarizeWeekSchedule(
+    {
+      gameWeek: [
+        { date: '2026-10-15', games: [scheduleGame(6, 'SEA', 'LAK', 3)] },
+      ],
+    },
+    WEEK,
+  );
+  const playoffReport = buildWeeklyReport({
+    weekStart: WEEK,
+    favorites: [],
+    favoriteTeams: [favoriteTeamOf('LAK')],
+    skaterRows: [],
+    goalieRows: [],
+    schedule: playoffWeek,
+    clubSeasonsByTeam: new Map([
+      [
+        'LAK',
+        {
+          team: { name: 'Los Angeles Kings', logo: null },
+          games: [
+            clubGame(6, '2026-10-15', 'SEA', 'LAK', 3, 2, {
+              periodType: 'OT',
+              isPlayoff: true,
+            }),
+          ],
+        },
+      ],
+    ]),
+  });
+  assert.equal(playoffReport.teams[0].weekGames[0].outcome, 'OTL');
+  assert.deepEqual(playoffReport.teams[0].formGames, []);
+});
+
+test('API-WPR-02 Verify: the team line in the headline', () => {
+  const edm = { triCode: 'EDM', weekGames: EDM_WEEK_GAMES };
+  const dal = {
+    triCode: 'DAL',
+    weekGames: [
+      { outcome: 'W' },
+      { outcome: 'L' },
+      { outcome: 'L' },
+    ],
+  };
+  const idle = { triCode: 'VAN', weekGames: [] };
+  const mcdavid = {
+    name: 'Connor McDavid',
+    type: 'skater',
+    played: true,
+    stats: { goals: 2, assists: 4, points: 6, gp: 3 },
+  };
+  const benched = { name: 'Auston Matthews', type: 'skater', played: false };
+
+  assert.equal(
+    buildHeadline([mcdavid, { ...mcdavid, name: 'Zach Hyman' }], [edm, dal]),
+    'Connor McDavid: 2G 4A in 3 GP and 1 more. Teams: EDM 1-0-1, DAL 1-2-0.',
+  );
+  // Teams without games are left out of the line.
+  assert.equal(
+    buildHeadline([mcdavid], [idle, edm]),
+    'Connor McDavid: 2G 4A in 3 GP. Teams: EDM 1-0-1.',
+  );
+  // No line when no team played: the headline reads as before.
+  assert.equal(
+    buildHeadline([mcdavid], [idle]),
+    'Connor McDavid: 2G 4A in 3 GP',
+  );
+  assert.equal(buildHeadline([mcdavid]), 'Connor McDavid: 2G 4A in 3 GP');
+  // Only teams played.
+  assert.equal(
+    buildHeadline([benched], [edm, dal]),
+    'Your favorite players did not play this week. Teams: EDM 1-0-1, DAL 1-2-0.',
+  );
+  // No favorite players at all.
+  assert.equal(
+    buildHeadline([], [edm, dal]),
+    'Teams: EDM 1-0-1, DAL 1-2-0.',
+  );
+});
+
+test('API-WPR-02 Verify: a report with no favorite teams, and team-only reports', () => {
+  const schedule = summarizeWeekSchedule(NORMAL_WEEK, WEEK);
+  const noTeams = buildWeeklyReport({
+    weekStart: WEEK,
+    favorites: [favoriteOf(MCDAVID)],
+    skaterRows: SKATER_ROWS,
+    goalieRows: [],
+    schedule,
+  });
+  assert.deepEqual(noTeams.teams, []);
+  assert.equal(noTeams.headline, 'Connor McDavid: 2G 4A in 2 GP');
+
+  // A favorite team that played keeps a report alive when no player did.
+  const teamOnly = buildWeeklyReport({
+    weekStart: WEEK,
+    favorites: [favoriteOf(HUGHES)],
+    favoriteTeams: [favoriteTeamOf('TOR')],
+    skaterRows: [],
+    goalieRows: [],
+    schedule,
+    clubSeasonsByTeam: CLUB_SEASONS_BY_TEAM,
+  });
+  assert.equal(
+    teamOnly.headline,
+    'Your favorite players did not play this week. Teams: TOR 0-1-0.',
+  );
+  // Nothing played at all: no report.
+  assert.equal(
+    buildWeeklyReport({
+      weekStart: WEEK,
+      favorites: [favoriteOf(HUGHES)],
+      favoriteTeams: [favoriteTeamOf('VAN')],
+      skaterRows: [],
+      goalieRows: [],
+      schedule,
+      clubSeasonsByTeam: CLUB_SEASONS_BY_TEAM,
+    }),
+    null,
+  );
+});
+
+test('API-WPR-02: a club schedule missing one of the week finals is not current', () => {
+  const schedule = summarizeWeekSchedule(NORMAL_WEEK, WEEK);
+  assert.equal(isClubScheduleCurrent('EDM', CLUB_SEASONS.EDM.games, schedule), true);
+  assert.equal(isClubScheduleCurrent('VAN', [], schedule), true);
+  const beforeSunday = CLUB_SEASONS.EDM.games.map((game) =>
+    game.gameId === 2
+      ? { ...game, gameState: 'FUT', homeScore: null, awayScore: null }
+      : game,
+  );
+  assert.equal(isClubScheduleCurrent('EDM', beforeSunday, schedule), false);
+  assert.equal(isClubScheduleCurrent('EDM', [], schedule), false);
 });
 
 // --- Favorites -------------------------------------------------------------
@@ -1071,4 +1391,134 @@ test('the account-wide switch off skips the weekly push', async () => {
   assert.equal(response.body.created, 2);
   assert.equal(response.body.users, 0);
   assert.equal(ctx.sent.length, 0);
+});
+
+/** Users 7 and 10 favorite teams: 7 adds EDM (diehard) and VAN to its players; 10 follows only TOR. */
+async function seedFavoriteTeams(ctx) {
+  ctx.db.favoriteTeams.push(
+    favoriteTeamRow(7, 'VAN'),
+    favoriteTeamRow(7, 'EDM', 'diehard', 'Since 84'),
+    favoriteTeamRow(8, 'VAN'),
+    favoriteTeamRow(10, 'TOR', 'curious'),
+  );
+  ctx.db.subscribe(10);
+}
+
+test('API-WPR-02 Verify: dispatch freezes teams[], one club schedule per distinct team, team-only users', async () => {
+  const ctx = build();
+  await seedUsers(ctx);
+  await seedFavoriteTeams(ctx);
+  const response = await weeklyDispatch(ctx);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.created, 3);
+  assert.equal(response.body.sent, 2);
+  // User 8 (VAN player and team, neither played) still gets nothing.
+  assert.deepEqual([...ctx.db.reports.keys()].sort(), [
+    `10:${WEEK}`,
+    `7:${WEEK}`,
+    `9:${WEEK}`,
+  ]);
+
+  // One cached club season schedule per distinct favorite team, for the
+  // season the week belongs to.
+  assert.deepEqual(
+    ctx.calls.clubSeasons
+      .map(({ triCode, seasonId, fresh }) => `${triCode} ${seasonId} ${fresh}`)
+      .sort(),
+    ['EDM 20262027 false', 'TOR 20262027 false', 'VAN 20262027 false'],
+  );
+
+  // The frozen teams[] the WPR-02 page reads, in fan-tier order.
+  const report = ctx.db.reports.get(`7:${WEEK}`).payload;
+  assert.deepEqual(report.teams, [
+    {
+      triCode: 'EDM',
+      name: 'Edmonton Oilers',
+      logo: 'https://assets.example/EDM.svg',
+      tier: 'diehard',
+      label: 'Since 84',
+      weekGames: EDM_WEEK_GAMES,
+      formGames: EDM_FORM_GAMES,
+    },
+    {
+      triCode: 'VAN',
+      name: 'Vancouver Canucks',
+      logo: 'https://assets.example/VAN.svg',
+      tier: 'fan',
+      label: null,
+      weekGames: [],
+      formGames: [],
+    },
+  ]);
+  assert.equal(
+    report.headline,
+    'Connor McDavid: 2G 4A in 2 GP and 1 more. Teams: EDM 1-0-1.',
+  );
+  // User 9 has no favorite teams: an empty team list.
+  assert.deepEqual(ctx.db.reports.get(`9:${WEEK}`).payload.teams, []);
+
+  const bodiesByEndpoint = Object.fromEntries(
+    ctx.sent.map(({ subscription, payload }) => [
+      subscription.endpoint,
+      payload.body,
+    ]),
+  );
+  assert.deepEqual(bodiesByEndpoint, {
+    'https://push.example.com/7':
+      'Connor McDavid: 2G 4A in 2 GP and 1 more. Teams: EDM 1-0-1.',
+    'https://push.example.com/10': 'Teams: TOR 0-1-0.',
+  });
+
+  // A rerun keeps the frozen reports and refetches nothing.
+  const again = await weeklyDispatch(ctx);
+  assert.equal(again.body.created, 0);
+  assert.equal(again.body.sent, 0);
+  assert.deepEqual(ctx.db.reports.get(`7:${WEEK}`).payload, report);
+});
+
+test('API-WPR-02: a stale club schedule is refetched once; a team schedule failure writes nothing', async () => {
+  const stale = build({ staleTeams: ['EDM'] });
+  await seedUsers(stale);
+  await seedFavoriteTeams(stale);
+  const response = await weeklyDispatch(stale);
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    stale.calls.clubSeasons
+      .filter(({ triCode }) => triCode === 'EDM')
+      .map(({ fresh }) => fresh),
+    [false, true],
+  );
+  assert.deepEqual(
+    stale.db.reports.get(`7:${WEEK}`).payload.teams[0].weekGames,
+    EDM_WEEK_GAMES,
+  );
+
+  const failing = build();
+  await seedUsers(failing);
+  await seedFavoriteTeams(failing);
+  failing.fail.teams = true;
+  const failed = await weeklyDispatch(failing);
+  assert.equal(failed.status, 502);
+  assert.equal(failing.db.reports.size, 0);
+  assert.equal(failing.sent.length, 0);
+  failing.fail.teams = false;
+  assert.equal((await weeklyDispatch(failing)).body.created, 3);
+});
+
+test('API-WPR-02: with every player muted, the weekly push carries the team line only', async () => {
+  const ctx = build();
+  await seedUsers(ctx);
+  await seedFavoriteTeams(ctx);
+  for (const playerId of [MCDAVID, SKINNER, HUGHES, MATTHEWS]) {
+    await request(ctx.favorites, `/api/favorite-players/${playerId}/push-mute`, {
+      method: 'PUT',
+      headers: auth(7),
+      body: json({ muted: true }),
+    });
+  }
+  await weeklyDispatch(ctx);
+  const userSevenPush = ctx.sent.find(
+    ({ subscription }) => subscription.endpoint === 'https://push.example.com/7',
+  );
+  assert.equal(userSevenPush.payload.body, 'Teams: EDM 1-0-1.');
 });

@@ -12,6 +12,7 @@ const {
   weekEndOf,
   summarizeWeekSchedule,
   normalizeGameRows,
+  isClubScheduleCurrent,
   buildWeeklyReport,
 } = require('#slices/weeklyPlayerReports/weeklyReportBuilder.js');
 
@@ -86,6 +87,24 @@ function groupFavoritesByUser(favoriteRows) {
   return { favoritesByUser, skaterIds, goalieIds };
 }
 
+/** Groups favorite_teams rows by user id and collects the distinct team codes. */
+function groupFavoriteTeamsByUser(favoriteTeamRows) {
+  const favoriteTeamsByUser = new Map();
+  const triCodes = new Set();
+  for (const favoriteTeamRow of favoriteTeamRows) {
+    const userFavoriteTeams =
+      favoriteTeamsByUser.get(favoriteTeamRow.user_id) ?? [];
+    userFavoriteTeams.push({
+      triCode: favoriteTeamRow.team_tri_code,
+      tier: favoriteTeamRow.tier ?? DEFAULT_FAVORITE_TIER,
+      label: favoriteTeamRow.label ?? null,
+    });
+    favoriteTeamsByUser.set(favoriteTeamRow.user_id, userFavoriteTeams);
+    triCodes.add(favoriteTeamRow.team_tri_code);
+  }
+  return { favoriteTeamsByUser, triCodes };
+}
+
 /** Sorts ids ascending so the same set always yields the same cache key. */
 function sortIds(ids) {
   return [...ids].sort((firstId, secondId) => firstId - secondId);
@@ -99,17 +118,26 @@ function sortIds(ids) {
  *
  * NHL calls per generated week: one league schedule (break check and team
  * game counts), then the stats REST per-game summaries for every distinct
- * favorited player across all users (one skater and one goalie query, paged).
- * Raw payloads are cached under keys that include the week, so a retried
- * dispatch reuses them; reports themselves are stored in Postgres.
+ * favorited player across all users (one skater and one goalie query, paged),
+ * and the club season schedule (12-hour cache) of every distinct favorite
+ * team across all users. Raw payloads are cached, so a retried dispatch
+ * reuses them; reports themselves are stored in Postgres.
  *
  * @param {{
  *   withTransaction: typeof import('#platform/pool.js').withTransaction,
  *   nhlApi: typeof import('#platform/nhlApiClient.js'),
  *   cache: typeof import('#platform/cacheManager.js'),
+ *   seasons: typeof import('#platform/seasonHelper.js'),
+ *   scheduleService: ReturnType<typeof import('#slices/schedule/scheduleService.js').createScheduleService>,
  * }} deps
  */
-function createWeeklyPlayerReportService({ withTransaction, nhlApi, cache }) {
+function createWeeklyPlayerReportService({
+  withTransaction,
+  nhlApi,
+  cache,
+  seasons,
+  scheduleService,
+}) {
   const { getOrFetchCached, CACHE_TYPES } = cache;
 
   /** The user's favorite players, in the API shape. */
@@ -268,6 +296,51 @@ function createWeeklyPlayerReportService({ withTransaction, nhlApi, cache }) {
     }
   }
 
+  /**
+   * One team's club season schedule for the report week. A cached copy that
+   * lacks a final the league schedule already has is refetched once.
+   */
+  async function loadClubSeason(triCode, seasonId, schedule) {
+    const cachedClubSeason = await scheduleService.getClubSeason(
+      triCode,
+      seasonId,
+    );
+    if (isClubScheduleCurrent(triCode, cachedClubSeason.games, schedule)) {
+      return cachedClubSeason;
+    }
+    const refetchedClubSeason = await scheduleService.getClubSeason(
+      triCode,
+      seasonId,
+      { fresh: true },
+    );
+    if (!isClubScheduleCurrent(triCode, refetchedClubSeason.games, schedule)) {
+      throw new Error(`club schedule for ${triCode} is missing a final`);
+    }
+    return refetchedClubSeason;
+  }
+
+  /**
+   * Club season schedules for every distinct favorite team, keyed by
+   * tri-code; any NHL failure becomes a 502 so no report is half-built.
+   */
+  async function loadClubSeasons(triCodes, { weekStart, schedule }) {
+    const seasonId = seasons.getCurrentSeasonId(
+      new Date(`${weekEndOf(weekStart)}T12:00:00`),
+    );
+    try {
+      const clubSeasonEntries = await Promise.all(
+        [...triCodes].map(async (triCode) => [
+          triCode,
+          await loadClubSeason(triCode, seasonId, schedule),
+        ]),
+      );
+      return new Map(clubSeasonEntries);
+    } catch (error) {
+      console.error('Weekly report team schedules failed:', error?.message);
+      throw createError(502, 'NHL team schedules unavailable.');
+    }
+  }
+
   /** Inserts the reports in one transaction; returns how many were new. */
   async function storeReports(reports, weekStart) {
     return await withTransaction(async (client) => {
@@ -410,27 +483,39 @@ function createWeeklyPlayerReportService({ withTransaction, nhlApi, cache }) {
         return { skipped: 'league-break', created: 0 };
       }
 
-      const favoriteRows = await withTransaction((client) =>
-        repository.listAllFavoritePlayers(client),
+      const [favoriteRows, favoriteTeamRows] = await withTransaction(
+        async (client) => [
+          await repository.listAllFavoritePlayers(client),
+          await repository.listAllFavoriteTeams(client),
+        ],
       );
       const { favoritesByUser, skaterIds, goalieIds } =
         groupFavoritesByUser(favoriteRows);
-      if (favoritesByUser.size === 0) return { created: 0 };
+      const { favoriteTeamsByUser, triCodes } =
+        groupFavoriteTeamsByUser(favoriteTeamRows);
+      const userIds = new Set([
+        ...favoritesByUser.keys(),
+        ...favoriteTeamsByUser.keys(),
+      ]);
+      if (userIds.size === 0) return { created: 0 };
 
-      const { skaterRows, goalieRows } = await loadWeekGameRows({
-        skaterIds,
-        goalieIds,
-        weekStart: validWeekStart,
-      });
+      const [{ skaterRows, goalieRows }, clubSeasonsByTeam] = await Promise.all(
+        [
+          loadWeekGameRows({ skaterIds, goalieIds, weekStart: validWeekStart }),
+          loadClubSeasons(triCodes, { weekStart: validWeekStart, schedule }),
+        ],
+      );
 
       const reports = [];
-      for (const [userId, favorites] of favoritesByUser) {
+      for (const userId of userIds) {
         const payload = buildWeeklyReport({
           weekStart: validWeekStart,
-          favorites,
+          favorites: favoritesByUser.get(userId) ?? [],
+          favoriteTeams: favoriteTeamsByUser.get(userId) ?? [],
           skaterRows,
           goalieRows,
           schedule,
+          clubSeasonsByTeam,
         });
         if (payload) reports.push({ userId, payload });
       }

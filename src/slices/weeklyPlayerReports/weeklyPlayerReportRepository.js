@@ -24,6 +24,18 @@ async function listAllFavoritePlayers(client) {
   return allFavoritePlayerRows;
 }
 
+/** Every user's favorite teams with their fan category, for the weekly dispatch. */
+async function listAllFavoriteTeams(client) {
+  const { rows: allFavoriteTeamRows } = await client.query(
+    `
+		SELECT user_id, team_tri_code, tier, label
+		FROM favorite_teams
+		ORDER BY user_id, created_at, team_tri_code
+		`,
+  );
+  return allFavoriteTeamRows;
+}
+
 /**
  * Adds a favorite unless the user already has `limit` others. Re-favoriting
  * keeps the original `created_at` and refreshes the display fields. Returns
@@ -171,6 +183,7 @@ async function listReportsForWeek(client, weekStart) {
 module.exports = {
   listFavoritePlayers,
   listAllFavoritePlayers,
+  listAllFavoriteTeams,
   insertFavoritePlayer,
   deleteFavoritePlayer,
   updateFavoritePlayerCategory,
