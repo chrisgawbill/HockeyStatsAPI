@@ -64,19 +64,30 @@ function createRosterService({ nhlApi, cache, runServiceTask }) {
   const { axiosNhl } = nhlApi;
   const { getOrFetchCached, CACHE_TYPES } = cache;
 
+  /** Cached raw NHL roster payload for one team/season. */
+  function fetchRosterPayload(triCode, seasonId) {
+    return getOrFetchCached(
+      CACHE_TYPES.ROSTER,
+      `${triCode}_${seasonId}`,
+      () =>
+        axiosNhl.get(`/roster/${triCode}/${seasonId}`).then((response) => response.data),
+    );
+  }
+
   return {
     /** Normalized RosterContract for one team/season. */
     async getRoster(triCode, seasonId) {
-      const rosterPayload = await getOrFetchCached(
-        CACHE_TYPES.ROSTER,
-        `${triCode}_${seasonId}`,
-        () =>
-          axiosNhl.get(`/roster/${triCode}/${seasonId}`).then((response) => response.data),
-      );
+      const rosterPayload = await fetchRosterPayload(triCode, seasonId);
       runServiceTask(`roster ${triCode} ${seasonId}`, () =>
         persistRoster({ seasonId, triCode, rosterPayload }),
       );
       return mapRoster(rosterPayload);
+    },
+
+    /** Fetches (cached) and stores a team's roster before returning, for reads that need it saved. */
+    async refreshRoster(triCode, seasonId) {
+      const rosterPayload = await fetchRosterPayload(triCode, seasonId);
+      await persistRoster({ seasonId, triCode, rosterPayload });
     },
 
     persistRoster,
