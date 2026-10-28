@@ -13,11 +13,14 @@ async function getTeamStatReport(client, seasonId, teamId, report) {
   return reportRows[0]?.payload ?? null;
 }
 
-/** Every team's stored payload of one report for a season, as `{ teamId, payload }`. */
+/**
+ * Every team's stored payload of one report for a season, as
+ * `{ teamId, payload, updatedAt }`.
+ */
 async function listTeamStatReports(client, seasonId, report) {
   const { rows: reportRows } = await client.query(
     `
-		SELECT team_id, payload
+		SELECT team_id, payload, updated_at
 		FROM team_stat_reports
 		WHERE season_id = $1 AND report = $2
 		`,
@@ -26,7 +29,21 @@ async function listTeamStatReports(client, seasonId, report) {
   return reportRows.map((reportRow) => ({
     teamId: reportRow.team_id,
     payload: reportRow.payload,
+    updatedAt: reportRow.updated_at,
   }));
+}
+
+/** The names of the reports stored for one team (or the league) in a season. */
+async function listStoredReports(client, seasonId, teamId) {
+  const { rows: reportRows } = await client.query(
+    `
+		SELECT report
+		FROM team_stat_reports
+		WHERE season_id = $1 AND team_id = $2
+		`,
+    [seasonId, teamId],
+  );
+  return reportRows.map((reportRow) => reportRow.report);
 }
 
 /** Upserts one team's stat report payload for a season. */
@@ -78,6 +95,7 @@ async function markGamesCaughtUp(client, gameIds) {
 module.exports = {
   getTeamStatReport,
   listTeamStatReports,
+  listStoredReports,
   upsertTeamStatReport,
   claimIngestedGames,
   markGamesCaughtUp,

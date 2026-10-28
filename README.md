@@ -153,14 +153,18 @@ The notifier's `weekly-player-report` schedule calls the weekly dispatch on Mond
 
 Rivalries (migration 011, `team_rivalries`) are site-wide, unordered team pairs: `teams` is alphabetical, `tier` is `primary` or `secondary`, `displayName` is a name like "Battle of Alberta" or `null`. Each pair is stored once with the lower team id first, so self-pairs and reversed duplicates are rejected. Disabled pairs are never returned, and nothing is inferred. The seed is the Product Owner-approved list.
 
+## Stored stats
+
+Player stats (`/player/skater/*`, `/player/goalie/*`, stat leaders) and team summaries (`/team/:teamId?`) are served from `team_stat_reports` (migration 013), not the NHL: one raw NHL payload per season, team and report, with league-wide reports under team id 0 and stat leaders stored per category as they are first asked for. When `POST /schedule/poll` sees a regular-season game go official, both teams' reports and the league-wide ones are re-fetched (`team_stats_ingested_games` records the game once; it is retried after 10 minutes while the NHL stats have not counted the game yet, judged by goalie starts). The scheduled schedule refresh (3x daily) also re-fetches any team or league report that is behind its official games, or that has not been refreshed for 7 days, as a weekly check against the NHL. A report never stored (such as a past season) is fetched from the NHL on first read and stored; if the database cannot be read, the NHL payload is served unstored.
+
 ## Caching
 
-NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for players, rosters, standings, stat leaders and teams, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 1-minute play-by-play while a game is live, 10-minute current week).
+NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for player landings, rosters, standings and weekly report rows, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 1-minute play-by-play while a game is live, 10-minute current week).
 
 - **Expired entries on a default lifetime** are returned at once while one background request refreshes them, so the first visitor after expiry does not wait on a slow NHL fetch (the league-wide summaries walk several pages). If the refresh fails, the expired copy stays and the next request tries again.
 - **Expired entries on a shorter lifetime** (live game data) wait for the refetch; if the NHL call fails, the expired copy is returned instead of an error.
 - **Missing entries** are fetched as before, and fail when the NHL call fails.
-- **Completed seasons** never expire for standings, stat leaders, team summaries and player summaries, once cached after the season ended (September 1 of its end year, the same rollover as the current-season id). A copy cached while the season was still running is refreshed once more, then kept.
+- **Completed seasons** never expire for standings, once cached after the season ended (September 1 of its end year, the same rollover as the current-season id). A copy cached while the season was still running is refreshed once more, then kept.
 
 Concurrent requests for the same entry share one NHL fetch. There is no in-memory layer in front of Postgres.
 

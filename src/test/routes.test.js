@@ -74,7 +74,6 @@ const { createScheduleRouter } = require('#presentation/routes/schedule.js');
 const container = createContainer();
 const healthRouter = createHealthRouter(container);
 const standingsRouter = createStandingsRouter(container);
-const playerRouter = createPlayerRouter(container);
 const teamRouter = createTeamRouter(container);
 const scheduleRouter = createScheduleRouter(container);
 
@@ -243,68 +242,79 @@ test('standings uses the season cache key and maps standings', async () => {
   assert.equal(body.standings[0].clinchingIndicator, 'x');
 });
 
-test('league-wide player routes key caches by category and season', async () => {
-  const get = (path, cacheKey, payload) =>
-    getCached(playerRouter, '/player', path, cacheKey, payload);
-
-  const skaterLeaders = await get(
-    '/player/skater/statLeaders/goals?season=20232024',
-    [CACHE_TYPES.STAT_LEADERS, 'skater_goals_20232024'],
-    { goals: [{ id: 7, firstName: { default: 'Cale' }, value: 42 }] },
+/**
+ * Player and team stats are stored reports: a container whose database holds
+ * `storedReports` (keyed `season:team:report`, league-wide under team 0).
+ */
+function storedReportsRouter(createRouter, storedReports) {
+  const client = {
+    async query(sql, params) {
+      const payload = sql.includes('SELECT payload')
+        ? storedReports[params.slice(0, 3).join(':')]
+        : undefined;
+      return { rows: payload ? [{ payload }] : [] };
+    },
+  };
+  return createRouter(
+    createContainer({ withTransaction: (callback) => callback(client) }),
   );
-  assert.equal(skaterLeaders[0].id, 7);
-  assert.equal(skaterLeaders[0].value, 42);
+}
 
-  const goalieLeaders = await get(
-    '/player/goalie/statLeaders/savePctg?season=20232024',
-    [CACHE_TYPES.STAT_LEADERS, 'goalie_savePctg_20232024'],
-    { savePctg: [{ id: 35, lastName: { default: 'Goalie' }, value: 0.925 }] },
-  );
-  assert.equal(goalieLeaders[0].id, 35);
-  assert.equal(goalieLeaders[0].value, 0.925);
-
-  const skaters = await get(
-    '/player/skater/summary?season=20232024',
-    [CACHE_TYPES.PLAYER, 'skater_summary_league_20232024'],
-    { data: [{ playerId: 29, skaterFullName: 'Nathan MacKinnon', goals: 51 }] },
-  );
-  assert.equal(skaters[0].playerId, 29);
-  assert.equal(skaters[0].goals, 51);
-
+test('league-wide player routes serve the stored league reports', async () => {
+  const skaterRow = { playerId: 29, skaterFullName: 'Nathan MacKinnon', goals: 51 };
   const corsi = { data: [{ playerId: 29, satPct: 55.1 }] };
-  assert.deepEqual(
-    await get(
-      '/player/skater/corsi?season=20232024',
-      [CACHE_TYPES.PLAYER, 'skater_corsi_all_20232024'],
-      corsi,
-    ),
-    corsi,
-  );
-
   const faceoffs = {
     data: [
       { playerId: 29, offensiveZoneFaceoffs: 210, defensiveZoneFaceoffs: 180 },
     ],
   };
-  assert.deepEqual(
-    await get(
-      '/player/skater/faceoffs?season=20232024',
-      [CACHE_TYPES.PLAYER, 'skater_faceoffs_all_20232024'],
-      faceoffs,
-    ),
-    faceoffs,
+  const app = makeTestApp(
+    '/player',
+    storedReportsRouter(createPlayerRouter, {
+      '20232024:0:skater_leaders:goals': {
+        goals: [{ id: 7, firstName: { default: 'Cale' }, value: 42 }],
+      },
+      '20232024:0:goalie_leaders:savePctg': {
+        savePctg: [{ id: 35, lastName: { default: 'Goalie' }, value: 0.925 }],
+      },
+      '20232024:0:skater_summary': { data: [skaterRow] },
+      '20232024:0:skater_corsi': corsi,
+      '20232024:0:skater_faceoffs': faceoffs,
+      '20232024:0:goalie_summary': {
+        data: [{ goalieId: 35, goalieFullName: 'Goalie Name', wins: 30 }],
+      },
+    }),
   );
+  const get = async (path) => {
+    const response = await request(app, path);
+    assert.equal(response.status, 200, path);
+    return response.body;
+  };
 
-  const goalies = await get(
-    '/player/goalie/summary?season=20232024',
-    [CACHE_TYPES.PLAYER, 'goalie_summary_league_20232024'],
-    { data: [{ goalieId: 35, goalieFullName: 'Goalie Name', wins: 30 }] },
+  const skaterLeaders = await get('/player/skater/statLeaders/goals?season=20232024');
+  assert.equal(skaterLeaders[0].id, 7);
+  assert.equal(skaterLeaders[0].value, 42);
+
+  const goalieLeaders = await get(
+    '/player/goalie/statLeaders/savePctg?season=20232024',
   );
+  assert.equal(goalieLeaders[0].id, 35);
+  assert.equal(goalieLeaders[0].value, 0.925);
+
+  const skaters = await get('/player/skater/summary?season=20232024');
+  assert.equal(skaters[0].playerId, 29);
+  assert.equal(skaters[0].goals, 51);
+
+  assert.deepEqual(await get('/player/skater/corsi?season=20232024'), corsi);
+  assert.deepEqual(await get('/player/skater/faceoffs?season=20232024'), faceoffs);
+
+  const goalies = await get('/player/goalie/summary?season=20232024');
   assert.equal(goalies[0].goalieId, 35);
   assert.equal(goalies[0].wins, 30);
+  assert.deepEqual(cacheState.calls, []);
 });
 
-test('team routes key caches by team and season', async () => {
+test('team roster and schedule routes key caches by team and season', async () => {
   const get = (path, cacheKey, payload) =>
     getCached(teamRouter, '/team', path, cacheKey, payload);
 
@@ -346,12 +356,27 @@ test('team routes key caches by team and season', async () => {
   assert.equal(schedule.games[0].gameId, 2023020001);
   assert.equal(schedule.games[0].homeTeam, 'COL');
 
-  const stats = await get(
-    '/team?season=20232024',
-    [CACHE_TYPES.TEAM, 'summary_all_20232024'],
-    { data: [{ teamId: 21, wins: 50 }] },
+});
+
+test('team summary routes serve the stored team and league reports', async () => {
+  const app = makeTestApp(
+    '/team',
+    storedReportsRouter(createTeamRouter, {
+      '20232024:21:team_summary': { data: [{ teamId: 21, wins: 50 }] },
+      '20232024:0:team_summary': {
+        data: [
+          { teamId: 21, wins: 50 },
+          { teamId: 25, wins: 45 },
+        ],
+      },
+    }),
   );
-  assert.equal(stats.data[0].wins, 50);
+  const team = await request(app, '/team/21?season=20232024');
+  assert.equal(team.status, 200);
+  assert.equal(team.body.data[0].wins, 50);
+  const league = await request(app, '/team?season=20232024');
+  assert.equal(league.status, 200);
+  assert.equal(league.body.data.length, 2);
 });
 
 test('POST /schedule/poll needs the cron secret and returns the poll summary', async () => {
