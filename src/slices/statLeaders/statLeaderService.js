@@ -72,54 +72,36 @@ function isNhlServerError(error) {
 }
 
 /**
- * Stat-leaders slice service: cached top-10 leader reads per category/season,
- * normalized into StatLeaderContract rows, plus write-behind persistence.
+ * Stat-leaders slice service: top-10 leader reads per category/season,
+ * normalized into StatLeaderContract rows. The raw leaders are stored reports
+ * (playerStatsService), refreshed after official games; their write-behind
+ * persistence runs when a category is fetched from the NHL.
  *
  * @param {{
- *   nhlApi: { axiosNhl: import('axios').AxiosInstance },
- *   cache: typeof import('#platform/cacheManager.js'),
- *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
+ *   playerStatsService: { getLeaders: (playerType: string, category: string, seasonId: string) => Promise<object> },
  * }} deps
  */
-function createStatLeaderService({ nhlApi, cache, runServiceTask }) {
-  const { axiosNhl } = nhlApi;
-  const { getOrFetchCached, CACHE_TYPES } = cache;
-
-  /** Shared read path for both player types; only the NHL path segment differs. */
+function createStatLeaderService({ playerStatsService }) {
+  /** Shared read path for both player types. */
   async function getLeaders(playerType, category, seasonId) {
-    const endpoint =
-      playerType === 'goalie' ? 'goalie-stats-leaders' : 'skater-stats-leaders';
     let leadersPayload;
     try {
-      leadersPayload = await getOrFetchCached(
-        CACHE_TYPES.STAT_LEADERS,
-        `${playerType}_${category}_${seasonId}`,
-        () =>
-          axiosNhl
-            .get(`/${endpoint}/${seasonId}/2?categories=${category}&limit=10`)
-            .then((response) => response.data)
-            .catch(emptyLeadersWhenCategoryMissing),
-        { seasonId },
+      leadersPayload = await playerStatsService.getLeaders(
+        playerType,
+        category,
+        seasonId,
       );
     } catch (error) {
       // The NHL API has answered a single empty category (goalie shutouts
       // early in a season) with a 5xx too. Serve no leaders for that category
-      // rather than failing the request, and cache nothing so the next
+      // rather than failing the request; nothing is stored, so the next
       // request asks again.
       if (!isNhlServerError(error)) throw error;
       console.warn(
-        `NHL ${endpoint} ${category} ${seasonId} answered ${error.status ?? error.response?.status}; serving no leaders`,
+        `NHL ${playerType} leaders ${category} ${seasonId} answered ${error.status ?? error.response?.status}; serving no leaders`,
       );
       return [];
     }
-    runServiceTask(`${playerType} leaders ${category} ${seasonId}`, () =>
-      persistStatLeaders({
-        seasonId,
-        playerType,
-        category,
-        leadersPayload,
-      }),
-    );
     return mapStatLeaders(leadersPayload, category);
   }
 
@@ -135,4 +117,5 @@ function createStatLeaderService({ nhlApi, cache, runServiceTask }) {
 module.exports = {
   createStatLeaderService,
   persistStatLeaders,
+  emptyLeadersWhenCategoryMissing,
 };

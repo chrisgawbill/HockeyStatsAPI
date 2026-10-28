@@ -6,8 +6,6 @@ const {
 } = require('#slices/players/playerStatsService.js');
 const { fetchAllStatsRows } = require('#platform/nhlStatsPages.js');
 
-const CACHE_TYPES = { PLAYER: 'player' };
-
 /** Builds `count` skater rows with ids starting at `firstId`. */
 function skaterRows(count, firstId = 1) {
   return Array.from({ length: count }, (_, index) => ({
@@ -29,35 +27,6 @@ function pagedStatsClient(rows, requestedUrls) {
       };
     },
   };
-}
-
-/** A cache stub that stores fetched values in memory under `type:key`. */
-function memoryCache() {
-  const entries = new Map();
-  return {
-    entries,
-    CACHE_TYPES,
-    async getOrFetchCached(type, key, fetcher) {
-      const cacheId = `${type}:${key}`;
-      if (!entries.has(cacheId)) entries.set(cacheId, await fetcher());
-      return entries.get(cacheId);
-    },
-  };
-}
-
-function makeService(rows) {
-  const requestedUrls = [];
-  const persistLabels = [];
-  const cache = memoryCache();
-  const service = createPlayerStatsService({
-    nhlApi: {
-      axiosNhlStats: pagedStatsClient(rows, requestedUrls),
-      axiosNhlGoalie: pagedStatsClient(rows, requestedUrls),
-    },
-    cache,
-    runServiceTask: (label) => persistLabels.push(label),
-  });
-  return { service, requestedUrls, persistLabels, cache };
 }
 
 test('fetchAllStatsRows stops at a short page or at the reported total', async () => {
@@ -84,29 +53,19 @@ test('fetchAllStatsRows stops at a short page or at the reported total', async (
   );
 });
 
-test('the league-wide skater summary returns every skater, sorted and paged', async () => {
-  const { service, requestedUrls, cache } = makeService(skaterRows(230));
-
-  const skaters = await service.getSkaterSummary(undefined, '20252026');
-
-  assert.equal(skaters.length, 230);
-  assert.equal(skaters[229].playerId, 230);
-  assert.equal(requestedUrls.length, 3);
-  for (const url of requestedUrls) {
-    assert.match(url, /^\/summary\?cayenneExp=/);
-    assert.match(url, /&sort=/);
-    assert.ok(decodeURIComponent(url).includes('"property":"playerId"'));
-  }
-  assert.ok(cache.entries.has('player:skater_summary_league_20252026'));
-});
-
 /**
  * A withTransaction stub over in-memory tables: stored team reports keyed
- * `season:team:report`, and the ingested games ledger keyed by game id, with
- * a settable clock (`db.nowMs`) for the retry cool-down.
+ * `season:team:report` (league-wide under team 0) with when each was stored,
+ * and the ingested games ledger keyed by game id, with a settable clock
+ * (`db.nowMs`) for the retry cool-down and report staleness.
  */
 function memoryDb({ failReads = false } = {}) {
-  const db = { reports: new Map(), ingestedGames: new Map(), nowMs: 0 };
+  const db = {
+    reports: new Map(),
+    updatedAtMs: new Map(),
+    ingestedGames: new Map(),
+    nowMs: 0,
+  };
   const client = {
     async query(sql, params) {
       if (sql.includes('SELECT payload')) {
@@ -116,14 +75,26 @@ function memoryDb({ failReads = false } = {}) {
       }
       if (sql.includes('SELECT team_id, payload')) {
         const [seasonId, report] = params;
-        const rows = [...db.reports]
-          .map(([key, payload]) => [key.split(':'), payload])
-          .filter(([key]) => key[0] === seasonId && key[2] === report)
-          .map(([key, payload]) => ({ team_id: Number(key[1]), payload }));
+        const rows = [...db.reports.keys()]
+          .filter((key) => key === `${seasonId}:${key.split(':')[1]}:${report}`)
+          .map((key) => ({
+            team_id: Number(key.split(':')[1]),
+            payload: db.reports.get(key),
+            updated_at: new Date(db.updatedAtMs.get(key) ?? 0),
+          }));
+        return { rows };
+      }
+      if (sql.includes('SELECT report')) {
+        const prefix = `${params[0]}:${params[1]}:`;
+        const rows = [...db.reports.keys()]
+          .filter((key) => key.startsWith(prefix))
+          .map((key) => ({ report: key.slice(prefix.length) }));
         return { rows };
       }
       if (sql.includes('INSERT INTO team_stat_reports')) {
-        db.reports.set(params.slice(0, 3).join(':'), JSON.parse(params[3]));
+        const key = params.slice(0, 3).join(':');
+        db.reports.set(key, JSON.parse(params[3]));
+        db.updatedAtMs.set(key, db.nowMs);
         return { rowCount: 1 };
       }
       if (sql.includes('INSERT INTO team_stats_ingested_games')) {
@@ -152,31 +123,102 @@ function memoryDb({ failReads = false } = {}) {
   return db;
 }
 
-/** A service on `db` whose stats clients answer every URL with `rows`, awaiting queued tasks inline. */
-function makeDbService(db, rows, { failNhl = false } = {}) {
+/**
+ * A service on `db` whose stats clients answer each URL with `rows(url)` and
+ * whose api-web client answers with `leaders(url)`, running queued store
+ * tasks inline (collected in `tasks`) and reading the clock from `db.nowMs`.
+ */
+function makeDbService(
+  db,
+  rows,
+  { failNhl = false, leaders = () => ({}), statsClient } = {},
+) {
   const requestedUrls = [];
-  const statsClient = {
+  const client = (answer) => ({
     async get(url) {
       requestedUrls.push(url);
       if (failNhl) throw new Error('NHL down');
-      return { data: { data: rows(), total: rows().length } };
+      return { data: answer(url) };
     },
-  };
+  });
+  const rowsClient =
+    statsClient ??
+    client((url) => ({ data: rows(url), total: rows(url).length }));
   const tasks = [];
   const service = createPlayerStatsService({
     nhlApi: {
-      axiosNhlStats: statsClient,
-      axiosNhlGoalie: statsClient,
-      axiosNhlTeam: statsClient,
+      axiosNhlStats: rowsClient,
+      axiosNhlGoalie: rowsClient,
+      axiosNhlTeam: rowsClient,
+      axiosNhl: client(leaders),
     },
-    cache: memoryCache(),
     runServiceTask: (label, task) => {
       if (label.startsWith('store ')) tasks.push(task());
     },
     withTransaction: db.withTransaction,
+    now: () => db.nowMs,
   });
   return { service, requestedUrls, tasks };
 }
+
+test('the league-wide skater summary is every skater, sorted, paged and stored', async () => {
+  const db = memoryDb();
+  const requestedUrls = [];
+  const { service, tasks } = makeDbService(db, null, {
+    statsClient: pagedStatsClient(skaterRows(230), requestedUrls),
+  });
+
+  const skaters = await service.getSkaterSummary(undefined, '20252026');
+  await Promise.all(tasks);
+
+  assert.equal(skaters.length, 230);
+  assert.equal(skaters[229].playerId, 230);
+  assert.equal(requestedUrls.length, 3);
+  for (const url of requestedUrls) {
+    assert.match(url, /^\/summary\?cayenneExp=/);
+    assert.ok(!decodeURIComponent(url).includes('teamId'));
+    assert.ok(decodeURIComponent(url).includes('"property":"playerId"'));
+  }
+  assert.equal(db.reports.get('20252026:0:skater_summary').data.length, 230);
+
+  await service.getSkaterSummary(undefined, '20252026');
+  assert.equal(requestedUrls.length, 3);
+});
+
+test('league-wide Corsi is paged so every skater is stored', async () => {
+  const db = memoryDb();
+  const requestedUrls = [];
+  const { service, tasks } = makeDbService(db, null, {
+    statsClient: pagedStatsClient(skaterRows(150), requestedUrls),
+  });
+
+  const corsi = await service.getSkaterCorsi(undefined, '20252026');
+  await Promise.all(tasks);
+  assert.equal(corsi.data.length, 150);
+  assert.equal(requestedUrls.length, 2);
+  assert.match(requestedUrls[0], /^\/percentages\?/);
+  assert.ok(db.reports.has('20252026:0:skater_corsi'));
+});
+
+test('stat leaders are stored per category; an empty category is not stored', async () => {
+  const db = memoryDb();
+  const { service, requestedUrls, tasks } = makeDbService(db, () => [], {
+    leaders: (url) =>
+      url.includes('categories=goals') ? { goals: [{ id: 7, value: 9 }] } : {},
+  });
+
+  const goals = await service.getLeaders('skater', 'goals', '20252026');
+  const shutouts = await service.getLeaders('goalie', 'shutouts', '20252026');
+  await Promise.all(tasks);
+  assert.equal(goals.goals[0].value, 9);
+  assert.deepEqual(shutouts, {});
+  assert.match(requestedUrls[0], /^\/skater-stats-leaders\/20252026\/2\?/);
+  assert.ok(db.reports.has('20252026:0:skater_leaders:goals'));
+  assert.ok(!db.reports.has('20252026:0:goalie_leaders:shutouts'));
+
+  await service.getLeaders('skater', 'goals', '20252026');
+  assert.equal(requestedUrls.length, 2);
+});
 
 test('team reports are read from the database; a missing one is fetched once and stored', async () => {
   const db = memoryDb();
@@ -205,7 +247,7 @@ test('the team summary is read from the database, keeping the raw NHL shape', as
   assert.equal(requestedUrls.length, 1);
   assert.ok(
     decodeURIComponent(requestedUrls[0]).includes(
-      'teamId=10 and seasonId=20252026 and gameTypeId=2',
+      'seasonId=20252026 and gameTypeId=2 and teamId=10',
     ),
   );
   assert.equal(fetched.data[0].wins, 7);
@@ -240,11 +282,21 @@ test('an official game refreshes both teams once and retries, after a cool-down,
   const db = memoryDb();
   db.reports.set('20252026:10:goalie_summary', goalieReport(5));
   db.reports.set('20252026:6:goalie_summary', goalieReport(5));
+  db.reports.set('20252026:0:skater_leaders:goals', { goals: [] });
   let nhlStarts = 5;
-  const rows = () => [{ playerId: 7, goalieId: 30, gamesStarted: nhlStarts }];
+  // A team's goalie summary counts its starts; the league's counts both teams'.
+  const rows = (url) => [
+    {
+      playerId: 7,
+      goalieId: 30,
+      gamesStarted: url.includes('teamId') ? nhlStarts : 2 * nhlStarts,
+    },
+  ];
   const game = { gameId: 99, seasonId: '20252026', gameType: 2, teamIds: [10, 6] };
   const preseasonGame = { ...game, gameId: 98, gameType: 1 };
-  const { service, requestedUrls } = makeDbService(db, rows);
+  const { service, requestedUrls } = makeDbService(db, rows, {
+    leaders: () => ({ goals: [{ id: 7, value: nhlStarts }] }),
+  });
 
   const originalWarn = console.warn;
   console.warn = () => {};
@@ -253,14 +305,14 @@ test('an official game refreshes both teams once and retries, after a cool-down,
       ingested: 0,
       retrying: 1,
     });
-    assert.equal(requestedUrls.length, 10);
+    assert.equal(requestedUrls.length, 16);
 
     db.nowMs = 5 * 60 * 1000;
     assert.deepEqual(await service.ingestOfficialGames([game]), {
       ingested: 0,
       retrying: 0,
     });
-    assert.equal(requestedUrls.length, 10);
+    assert.equal(requestedUrls.length, 16);
   } finally {
     console.warn = originalWarn;
   }
@@ -271,8 +323,12 @@ test('an official game refreshes both teams once and retries, after a cool-down,
     ingested: 1,
     retrying: 0,
   });
-  assert.equal(requestedUrls.length, 20);
-  assert.equal(db.reports.size, 10);
+  assert.equal(requestedUrls.length, 32);
+  assert.equal(db.reports.size, 16);
+  assert.equal(
+    db.reports.get('20252026:0:skater_leaders:goals').goals[0].value,
+    6,
+  );
   assert.equal(db.ingestedGames.has(98), false);
 
   db.nowMs = 60 * 60 * 1000;
@@ -280,7 +336,31 @@ test('an official game refreshes both teams once and retries, after a cool-down,
     ingested: 0,
     retrying: 0,
   });
-  assert.equal(requestedUrls.length, 20);
+  assert.equal(requestedUrls.length, 32);
+});
+
+test('a game is retried while the league-wide reports are behind', async () => {
+  const db = memoryDb();
+  db.reports.set('20252026:10:goalie_summary', goalieReport(5));
+  db.reports.set('20252026:6:goalie_summary', goalieReport(5));
+  db.reports.set('20252026:0:goalie_summary', goalieReport(10));
+  // Both teams caught up (6 starts) but the league still counts 10.
+  const rows = (url) => [
+    { goalieId: 30, gamesStarted: url.includes('teamId') ? 6 : 10 },
+  ];
+  const game = { gameId: 99, seasonId: '20252026', gameType: 2, teamIds: [10, 6] };
+  const { service } = makeDbService(db, rows);
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    assert.deepEqual(await service.ingestOfficialGames([game]), {
+      ingested: 0,
+      retrying: 1,
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test('a failed refresh leaves the game to retry', async () => {
@@ -301,7 +381,7 @@ test('a failed refresh leaves the game to retry', async () => {
   assert.equal(db.ingestedGames.get(99).caughtUp, false);
 });
 
-test('the sweep refreshes only teams with fewer stored goalie starts than official games', async () => {
+test('the sweep refreshes scopes behind their official games or not refreshed in a week', async () => {
   const db = memoryDb();
   const officialGame = (gameId, teamIds, gameType = 2) => ({
     gameId,
@@ -323,15 +403,40 @@ test('the sweep refreshes only teams with fewer stored goalie starts than offici
   ]);
 
   // 10 is caught up (2 of 2) and 8 too (preseason games do not count); 6
-  // stored 1 of 2 and 22 has nothing stored. 6 is still behind afterwards.
+  // stored 1 of 2, and 22 and the league have nothing stored. 6 and the
+  // league (1 of 6 starts) are still behind afterwards.
   assert.deepEqual(summary, {
-    teamsChecked: 4,
-    teamsRefreshed: 2,
-    teamsBehind: 1,
+    teamsChecked: 5,
+    teamsRefreshed: 3,
+    teamsStale: 0,
+    teamsBehind: 2,
     teamsFailed: 0,
   });
-  assert.equal(requestedUrls.length, 10);
+  assert.equal(requestedUrls.length, 15);
   assert.ok(db.reports.has('20252026:22:skater_summary'));
   assert.ok(db.reports.has('20252026:22:team_summary'));
+  assert.ok(db.reports.has('20252026:0:skater_summary'));
   assert.ok(!db.reports.has('20252026:10:skater_summary'));
+
+  const games = [
+    officialGame(1, [10, 6]),
+    officialGame(2, [10, 22]),
+    officialGame(3, [8, 6]),
+  ];
+  // A week later every stored scope is re-checked against the NHL...
+  db.nowMs = 8 * 24 * 60 * 60 * 1000;
+  assert.deepEqual(await service.sweepTeamStats(games), {
+    teamsChecked: 5,
+    teamsRefreshed: 5,
+    teamsStale: 5,
+    teamsBehind: 3,
+    teamsFailed: 0,
+  });
+  // ...and a day after that only the scopes still behind (10, 6, league) are.
+  db.nowMs += 24 * 60 * 60 * 1000;
+  const { teamsRefreshed, teamsStale } = await service.sweepTeamStats(games);
+  assert.deepEqual({ teamsRefreshed, teamsStale }, {
+    teamsRefreshed: 3,
+    teamsStale: 0,
+  });
 });

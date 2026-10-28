@@ -55,20 +55,15 @@ async function persistTeamSeason({
 
 /**
  * Teams slice service: raw NHL team summary stats plus write-behind persistence
- * of the team/season snapshot. One team's summary is the stored `team_summary`
- * report (playerStatsService), refreshed after each of its games; the
- * league-wide summary stays on the cache.
+ * of the team/season snapshot. The summary is the stored `team_summary` report
+ * (playerStatsService), per team or league-wide, refreshed after each game;
+ * the snapshot is persisted when it is fetched from the NHL.
  *
  * @param {{
- *   nhlApi: { axiosNhlTeam: import('axios').AxiosInstance },
- *   cache: typeof import('#platform/cacheManager.js'),
- *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
- *   playerStatsService: { getTeamSummary: (teamId: string, seasonId: string) => Promise<object> },
+ *   playerStatsService: { getTeamSummary: (teamId: string | undefined, seasonId: string) => Promise<object> },
  * }} deps
  */
-function createTeamService({ nhlApi, cache, runServiceTask, playerStatsService }) {
-  const { axiosNhlTeam } = nhlApi;
-  const { getOrFetchCached, CACHE_TYPES } = cache;
+function createTeamService({ playerStatsService }) {
 
   return {
     /**
@@ -76,21 +71,7 @@ function createTeamService({ nhlApi, cache, runServiceTask, playerStatsService }
      * `teamId` is omitted. Passed through unmapped (not yet normalized).
      */
     async getTeamSummary(teamId, seasonId) {
-      if (teamId) return await playerStatsService.getTeamSummary(teamId, seasonId);
-      const cayenneFilter = `seasonId=${seasonId} and gameTypeId=2`;
-      const teamStatsPayload = await getOrFetchCached(
-        CACHE_TYPES.TEAM,
-        `summary_all_${seasonId}`,
-        () =>
-          axiosNhlTeam
-            .get(`/summary?cayenneExp=${encodeURIComponent(cayenneFilter)}`)
-            .then((response) => response.data),
-        { seasonId },
-      );
-      runServiceTask(`team summary all ${seasonId}`, () =>
-        persistTeamSeason({ seasonId, teamStatsPayload }),
-      );
-      return teamStatsPayload;
+      return await playerStatsService.getTeamSummary(teamId, seasonId);
     },
 
     persistTeamSeason,

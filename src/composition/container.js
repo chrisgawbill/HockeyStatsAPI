@@ -80,7 +80,10 @@ function createContainer(overrides = {}) {
   const teamService = createTeamService({ ...platform, playerStatsService });
   const rosterService = createRosterService(platform);
   const lineService = createLineService({ ...platform, scheduleService });
-  const statLeaderService = createStatLeaderService(platform);
+  const statLeaderService = createStatLeaderService({
+    ...platform,
+    playerStatsService,
+  });
   const aiSummaryService = createAiSummaryService(platform);
   const authService = createAuthService(platform);
   const boardGameStreakService = createBoardGameStreakService(platform);

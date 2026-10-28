@@ -5,22 +5,23 @@ const {
   createStatLeaderService,
 } = require('#slices/statLeaders/statLeaderService.js');
 
-const CACHE_TYPES = { STAT_LEADERS: 'stat-leaders' };
-
-/** Cache stub that always calls through to the fetcher (no persistence). */
-const passthroughCache = {
-  CACHE_TYPES,
-  getOrFetchCached: (type, key, fetcher) => fetcher(),
-};
+const {
+  createPlayerStatsService,
+} = require('#slices/players/playerStatsService.js');
 
 /** Never actually schedules background persistence in these tests. */
 const noopRunServiceTask = () => null;
 
+/** A database with nothing stored, so every read goes to the NHL. */
+const emptyDb = (callback) => callback({ query: async () => ({ rows: [] }) });
+
 function makeService(axiosGet) {
   return createStatLeaderService({
-    nhlApi: { axiosNhl: { get: axiosGet } },
-    cache: passthroughCache,
-    runServiceTask: noopRunServiceTask,
+    playerStatsService: createPlayerStatsService({
+      nhlApi: { axiosNhl: { get: axiosGet } },
+      runServiceTask: noopRunServiceTask,
+      withTransaction: emptyDb,
+    }),
   });
 }
 
