@@ -122,7 +122,7 @@ function memoryDb({ failReads = false } = {}) {
           .map(([key, payload]) => ({ team_id: Number(key[1]), payload }));
         return { rows };
       }
-      if (sql.includes('INSERT INTO team_player_stat_reports')) {
+      if (sql.includes('INSERT INTO team_stat_reports')) {
         db.reports.set(params.slice(0, 3).join(':'), JSON.parse(params[3]));
         return { rowCount: 1 };
       }
@@ -164,7 +164,11 @@ function makeDbService(db, rows, { failNhl = false } = {}) {
   };
   const tasks = [];
   const service = createPlayerStatsService({
-    nhlApi: { axiosNhlStats: statsClient, axiosNhlGoalie: statsClient },
+    nhlApi: {
+      axiosNhlStats: statsClient,
+      axiosNhlGoalie: statsClient,
+      axiosNhlTeam: statsClient,
+    },
     cache: memoryCache(),
     runServiceTask: (label, task) => {
       if (label.startsWith('store ')) tasks.push(task());
@@ -188,6 +192,27 @@ test('team reports are read from the database; a missing one is fetched once and
   const corsi = await service.getSkaterCorsi('10', '20252026');
   assert.equal(requestedUrls.length, 1);
   assert.equal(corsi.data.length, 2);
+});
+
+test('the team summary is read from the database, keeping the raw NHL shape', async () => {
+  const db = memoryDb();
+  const { service, requestedUrls, tasks } = makeDbService(db, () => [
+    { teamId: 10, wins: 7 },
+  ]);
+
+  const fetched = await service.getTeamSummary('10', '20252026');
+  await Promise.all(tasks);
+  assert.equal(requestedUrls.length, 1);
+  assert.ok(
+    decodeURIComponent(requestedUrls[0]).includes(
+      'teamId=10 and seasonId=20252026 and gameTypeId=2',
+    ),
+  );
+  assert.equal(fetched.data[0].wins, 7);
+
+  const stored = await service.getTeamSummary('10', '20252026');
+  assert.equal(requestedUrls.length, 1);
+  assert.deepEqual(stored, fetched);
 });
 
 test('an unreadable database falls back to the NHL without storing', async () => {
@@ -228,14 +253,14 @@ test('an official game refreshes both teams once and retries, after a cool-down,
       ingested: 0,
       retrying: 1,
     });
-    assert.equal(requestedUrls.length, 8);
+    assert.equal(requestedUrls.length, 10);
 
     db.nowMs = 5 * 60 * 1000;
     assert.deepEqual(await service.ingestOfficialGames([game]), {
       ingested: 0,
       retrying: 0,
     });
-    assert.equal(requestedUrls.length, 8);
+    assert.equal(requestedUrls.length, 10);
   } finally {
     console.warn = originalWarn;
   }
@@ -246,8 +271,8 @@ test('an official game refreshes both teams once and retries, after a cool-down,
     ingested: 1,
     retrying: 0,
   });
-  assert.equal(requestedUrls.length, 16);
-  assert.equal(db.reports.size, 8);
+  assert.equal(requestedUrls.length, 20);
+  assert.equal(db.reports.size, 10);
   assert.equal(db.ingestedGames.has(98), false);
 
   db.nowMs = 60 * 60 * 1000;
@@ -255,7 +280,7 @@ test('an official game refreshes both teams once and retries, after a cool-down,
     ingested: 0,
     retrying: 0,
   });
-  assert.equal(requestedUrls.length, 16);
+  assert.equal(requestedUrls.length, 20);
 });
 
 test('a failed refresh leaves the game to retry', async () => {
@@ -305,7 +330,8 @@ test('the sweep refreshes only teams with fewer stored goalie starts than offici
     teamsBehind: 1,
     teamsFailed: 0,
   });
-  assert.equal(requestedUrls.length, 8);
+  assert.equal(requestedUrls.length, 10);
   assert.ok(db.reports.has('20252026:22:skater_summary'));
+  assert.ok(db.reports.has('20252026:22:team_summary'));
   assert.ok(!db.reports.has('20252026:10:skater_summary'));
 });

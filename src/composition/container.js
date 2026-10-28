@@ -77,7 +77,7 @@ function createContainer(overrides = {}) {
     playerStatsService,
   });
   const standingsService = createStandingsService(platform);
-  const teamService = createTeamService(platform);
+  const teamService = createTeamService({ ...platform, playerStatsService });
   const rosterService = createRosterService(platform);
   const lineService = createLineService({ ...platform, scheduleService });
   const statLeaderService = createStatLeaderService(platform);

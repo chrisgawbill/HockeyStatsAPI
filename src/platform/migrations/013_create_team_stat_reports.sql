@@ -1,8 +1,8 @@
--- Team-scoped player stat reports (skater summary, Corsi, zone faceoffs,
--- goalie summary) as the raw NHL payloads the team page reads. Refreshed for
--- both teams when the live poll sees a game go official, so the team page
--- reads the database instead of the NHL.
-CREATE TABLE IF NOT EXISTS team_player_stat_reports (
+-- Team-scoped stat reports (team summary, skater summary, Corsi, zone
+-- faceoffs, goalie summary) as the raw NHL payloads the team page reads.
+-- Refreshed for both teams when the live poll sees a game go official, so the
+-- team page reads the database instead of the NHL.
+CREATE TABLE IF NOT EXISTS team_stat_reports (
 	season_id text NOT NULL,
 	team_id integer NOT NULL,
 	report text NOT NULL,

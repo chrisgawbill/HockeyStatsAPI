@@ -347,8 +347,8 @@ test('team routes key caches by team and season', async () => {
   assert.equal(schedule.games[0].homeTeam, 'COL');
 
   const stats = await get(
-    '/team/21?season=20232024',
-    [CACHE_TYPES.TEAM, 'summary_21_20232024'],
+    '/team?season=20232024',
+    [CACHE_TYPES.TEAM, 'summary_all_20232024'],
     { data: [{ teamId: 21, wins: 50 }] },
   );
   assert.equal(stats.data[0].wins, 50);

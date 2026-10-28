@@ -7,6 +7,7 @@ const seasonsRepository = require('#slices/seasons/seasonRepository.js');
 const playersRepository = require('#slices/players/playersRepository.js');
 const playerStatsRepository = require('#slices/players/playerStatsRepository.js');
 const teamStatReportRepository = require('#slices/players/teamStatReportRepository.js');
+const { persistTeamSeason } = require('#slices/teams/teamService.js');
 const { buildSeason } = require('#platform/entityBuilders.js');
 const { fetchAllStatsRows } = require('#platform/nhlStatsPages.js');
 const {
@@ -29,6 +30,7 @@ const TEAM_REPORTS = {
   SKATER_CORSI: 'skater_corsi',
   SKATER_FACEOFFS: 'skater_faceoffs',
   GOALIE_SUMMARY: 'goalie_summary',
+  TEAM_SUMMARY: 'team_summary',
 };
 
 /** NHL game type of regular-season games, the only ones the reports count. */
@@ -90,9 +92,10 @@ async function persistPlayerStats({
 
 /**
  * Players slice service: regular-season skater/goalie stat reads for a team
- * (or the whole league) plus write-behind persistence.
+ * (or the whole league) plus write-behind persistence. Also owns the stored
+ * team summary report, which teamService reads for one team.
  *
- * Team-scoped reports are served from `team_player_stat_reports`, refreshed
+ * Team-scoped reports are served from `team_stat_reports`, refreshed
  * for both teams when a game goes official (`ingestOfficialGames`), so the
  * team page shows a finished game's stats without calling the NHL. A report
  * missing from the database is fetched once and stored. League-wide reads
@@ -102,6 +105,7 @@ async function persistPlayerStats({
  *   nhlApi: {
  *     axiosNhlStats: import('axios').AxiosInstance,
  *     axiosNhlGoalie: import('axios').AxiosInstance,
+ *     axiosNhlTeam: import('axios').AxiosInstance,
  *   },
  *   cache: typeof import('#platform/cacheManager.js'),
  *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
@@ -114,7 +118,7 @@ function createPlayerStatsService({
   runServiceTask,
   withTransaction: runInTransaction = withTransaction,
 }) {
-  const { axiosNhlStats, axiosNhlGoalie } = nhlApi;
+  const { axiosNhlStats, axiosNhlGoalie, axiosNhlTeam } = nhlApi;
   const { getOrFetchCached, CACHE_TYPES } = cache;
 
   /** NHL stats API filter for one season, optionally narrowed to one team. */
@@ -186,6 +190,18 @@ function createPlayerStatsService({
         seasonId,
         teamId,
       }),
+    // Team-scoped only; teamService serves the league-wide summary from the
+    // cache. A fresh fetch queues the team/season snapshot for the database.
+    [TEAM_REPORTS.TEAM_SUMMARY]: async (seasonId, teamId) => {
+      const cayenneFilter = `teamId=${teamId} and seasonId=${seasonId} and gameTypeId=2`;
+      const teamStatsPayload = await axiosNhlTeam
+        .get(`/summary?cayenneExp=${encodeURIComponent(cayenneFilter)}`)
+        .then((response) => response.data);
+      runServiceTask(`team summary ${teamId} ${seasonId}`, () =>
+        persistTeamSeason({ seasonId, teamStatsPayload }),
+      );
+      return teamStatsPayload;
+    },
   };
 
   /**
@@ -466,6 +482,11 @@ function createPlayerStatsService({
       return mapGoalieSummary(
         await getReport(TEAM_REPORTS.GOALIE_SUMMARY, teamId, seasonId),
       );
+    },
+
+    /** Raw NHL team summary for one team, from the database. */
+    async getTeamSummary(teamId, seasonId) {
+      return await readTeamReport(TEAM_REPORTS.TEAM_SUMMARY, teamId, seasonId);
     },
 
     ingestOfficialGames,

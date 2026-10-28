@@ -5,7 +5,7 @@ async function getTeamStatReport(client, seasonId, teamId, report) {
   const { rows: reportRows } = await client.query(
     `
 		SELECT payload
-		FROM team_player_stat_reports
+		FROM team_stat_reports
 		WHERE season_id = $1 AND team_id = $2 AND report = $3
 		`,
     [seasonId, teamId, report],
@@ -18,7 +18,7 @@ async function listTeamStatReports(client, seasonId, report) {
   const { rows: reportRows } = await client.query(
     `
 		SELECT team_id, payload
-		FROM team_player_stat_reports
+		FROM team_stat_reports
 		WHERE season_id = $1 AND report = $2
 		`,
     [seasonId, report],
@@ -33,7 +33,7 @@ async function listTeamStatReports(client, seasonId, report) {
 async function upsertTeamStatReport(client, seasonId, teamId, report, payload) {
   await client.query(
     `
-		INSERT INTO team_player_stat_reports (season_id, team_id, report, payload, updated_at)
+		INSERT INTO team_stat_reports (season_id, team_id, report, payload, updated_at)
 		VALUES ($1, $2, $3, $4, now())
 		ON CONFLICT (season_id, team_id, report)
 		DO UPDATE SET payload = EXCLUDED.payload, updated_at = now()
