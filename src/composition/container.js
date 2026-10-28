@@ -71,12 +71,15 @@ function createContainer(overrides = {}) {
     ...overrides,
   };
 
-  const scheduleService = createScheduleService(platform);
+  const playerStatsService = createPlayerStatsService(platform);
+  const scheduleService = createScheduleService({
+    ...platform,
+    playerStatsService,
+  });
   const standingsService = createStandingsService(platform);
   const teamService = createTeamService(platform);
   const rosterService = createRosterService(platform);
   const lineService = createLineService({ ...platform, scheduleService });
-  const playerStatsService = createPlayerStatsService(platform);
   const statLeaderService = createStatLeaderService(platform);
   const aiSummaryService = createAiSummaryService(platform);
   const authService = createAuthService(platform);

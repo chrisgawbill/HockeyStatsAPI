@@ -161,9 +161,16 @@ function listSeasonWeekDates(seasonId) {
  *   cache: typeof import('#platform/cacheManager.js'),
  *   seasons: typeof import('#platform/seasonHelper.js'),
  *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
+ *   playerStatsService?: { ingestOfficialGames(games: object[]): Promise<object> },
  * }} deps
  */
-function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
+function createScheduleService({
+  nhlApi,
+  cache,
+  seasons,
+  runServiceTask,
+  playerStatsService,
+}) {
   const { axiosNhl } = nhlApi;
   const { getOrFetchCached, readCache, writeCache, CACHE_TYPES } = cache;
 
@@ -451,9 +458,10 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * (at most once a minute per game, shared with the game page's cache),
      * then writes each game's state and score to `schedule_games`. Every
      * schedule read overlays these boxscores, so After Action Reports and
-     * pushes see a final without polling each user's teams. Runs from the
-     * notifier's schedule and at the start of each push dispatch. A failed
-     * game is counted and retried on the next poll.
+     * pushes see a final without polling each user's teams. Games that are
+     * official (`OFF`) have their teams' player stats refreshed in the
+     * database. Runs from the notifier's schedule and at the start of each
+     * push dispatch. A failed game is counted and retried on the next poll.
      */
     async pollGames() {
       const now = Date.now();
@@ -469,6 +477,7 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
       );
 
       const statuses = [];
+      const officialGames = [];
       const summary = { polled: games.length, live: 0, final: 0, failed: 0 };
       outcomes.forEach((outcome, index) => {
         const status =
@@ -492,6 +501,17 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           awayScore: status.awayScore,
           periodDescriptor: outcome.value.periodDescriptor ?? null,
         });
+        if (isOfficialFinal(status.gameState)) {
+          officialGames.push({
+            gameId: games[index].gameId,
+            seasonId: String(
+              outcome.value.season ?? seasons.getCurrentSeasonId(),
+            ),
+            gameType: outcome.value.gameType,
+            teamIds: [outcome.value.homeTeam?.id, outcome.value.awayTeam?.id]
+              .filter(Boolean),
+          });
+        }
       });
 
       runServiceTask('live game statuses', () =>
@@ -499,6 +519,11 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           scheduleGamesRepository.updateGameStatuses(client, statuses),
         ),
       );
+      if (playerStatsService && officialGames.length > 0) {
+        runServiceTask('team stats after official games', () =>
+          playerStatsService.ingestOfficialGames(officialGames),
+        );
+      }
       return summary;
     },
 
