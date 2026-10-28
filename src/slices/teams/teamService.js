@@ -55,15 +55,18 @@ async function persistTeamSeason({
 
 /**
  * Teams slice service: raw NHL team summary stats plus write-behind persistence
- * of the team/season snapshot.
+ * of the team/season snapshot. One team's summary is the stored `team_summary`
+ * report (playerStatsService), refreshed after each of its games; the
+ * league-wide summary stays on the cache.
  *
  * @param {{
  *   nhlApi: { axiosNhlTeam: import('axios').AxiosInstance },
  *   cache: typeof import('#platform/cacheManager.js'),
  *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
+ *   playerStatsService: { getTeamSummary: (teamId: string, seasonId: string) => Promise<object> },
  * }} deps
  */
-function createTeamService({ nhlApi, cache, runServiceTask }) {
+function createTeamService({ nhlApi, cache, runServiceTask, playerStatsService }) {
   const { axiosNhlTeam } = nhlApi;
   const { getOrFetchCached, CACHE_TYPES } = cache;
 
@@ -73,19 +76,18 @@ function createTeamService({ nhlApi, cache, runServiceTask }) {
      * `teamId` is omitted. Passed through unmapped (not yet normalized).
      */
     async getTeamSummary(teamId, seasonId) {
-      const cayenneFilter = teamId
-        ? `teamId=${teamId} and seasonId=${seasonId} and gameTypeId=2`
-        : `seasonId=${seasonId} and gameTypeId=2`;
+      if (teamId) return await playerStatsService.getTeamSummary(teamId, seasonId);
+      const cayenneFilter = `seasonId=${seasonId} and gameTypeId=2`;
       const teamStatsPayload = await getOrFetchCached(
         CACHE_TYPES.TEAM,
-        `summary_${teamId || 'all'}_${seasonId}`,
+        `summary_all_${seasonId}`,
         () =>
           axiosNhlTeam
             .get(`/summary?cayenneExp=${encodeURIComponent(cayenneFilter)}`)
             .then((response) => response.data),
         { seasonId },
       );
-      runServiceTask(`team summary ${teamId || 'all'} ${seasonId}`, () =>
+      runServiceTask(`team summary all ${seasonId}`, () =>
         persistTeamSeason({ seasonId, teamStatsPayload }),
       );
       return teamStatsPayload;

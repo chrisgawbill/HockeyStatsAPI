@@ -74,6 +74,22 @@ function mapSeasonSchedule(weeklyPayload) {
 }
 
 /**
+ * The official (`OFF`) games of a raw season schedule, shaped for the player
+ * stats sweep.
+ */
+function listOfficialGames(weeklyPayload, seasonId) {
+  return (weeklyPayload?.gameWeek ?? [])
+    .flatMap((week) => week.games ?? [])
+    .filter((rawGame) => isOfficialFinal(rawGame.gameState))
+    .map((rawGame) => ({
+      gameId: rawGame.id,
+      seasonId: String(rawGame.season ?? seasonId),
+      gameType: rawGame.gameType,
+      teamIds: [rawGame.homeTeam?.id, rawGame.awayTeam?.id].filter(Boolean),
+    }));
+}
+
+/**
  * Local-time-aware short weekday for a YYYY-MM-DD club-schedule date.
  * (The club-schedule endpoint has no dayAbbrev like the weekly endpoint does.)
  * @param {string} gameDate
@@ -161,9 +177,19 @@ function listSeasonWeekDates(seasonId) {
  *   cache: typeof import('#platform/cacheManager.js'),
  *   seasons: typeof import('#platform/seasonHelper.js'),
  *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
+ *   playerStatsService?: {
+ *     ingestOfficialGames(games: object[]): Promise<object>,
+ *     sweepTeamStats(games: object[]): Promise<object>,
+ *   },
  * }} deps
  */
-function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
+function createScheduleService({
+  nhlApi,
+  cache,
+  seasons,
+  runServiceTask,
+  playerStatsService,
+}) {
   const { axiosNhl } = nhlApi;
   const { getOrFetchCached, readCache, writeCache, CACHE_TYPES } = cache;
 
@@ -373,8 +399,10 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
     /**
      * Re-fetches the current season's schedule and overwrites its cache entry.
      * Invoked on a timer by the refresh scheduler so the cached schedule stays
-     * current without a user request triggering the fetch. Errors are logged,
-     * not thrown, so a failed refresh never crashes the scheduler.
+     * current without a user request triggering the fetch, then sweeps the
+     * season's official games into the stored team player stats (see
+     * `sweepTeamStats`). Errors are logged, not thrown, so a failed refresh
+     * never crashes the scheduler.
      */
     async refreshScheduleCache() {
       try {
@@ -382,6 +410,15 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
         const schedulePayload = await fetchSeasonSchedule(seasonId);
         await writeCache(CACHE_TYPES.SCHEDULE, seasonId, schedulePayload);
         console.log('Schedule cache refreshed at', new Date().toISOString());
+        if (!playerStatsService) return;
+        try {
+          const sweepSummary = await playerStatsService.sweepTeamStats(
+            listOfficialGames(schedulePayload, seasonId),
+          );
+          console.log('Team stats sweep:', JSON.stringify(sweepSummary));
+        } catch (error) {
+          console.error('Team stats sweep failed:', error);
+        }
       } catch (error) {
         console.error('Failed to refresh schedule cache:', error);
       }
@@ -451,9 +488,10 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
      * (at most once a minute per game, shared with the game page's cache),
      * then writes each game's state and score to `schedule_games`. Every
      * schedule read overlays these boxscores, so After Action Reports and
-     * pushes see a final without polling each user's teams. Runs from the
-     * notifier's schedule and at the start of each push dispatch. A failed
-     * game is counted and retried on the next poll.
+     * pushes see a final without polling each user's teams. Games that are
+     * official (`OFF`) have their teams' player stats refreshed in the
+     * database. Runs from the notifier's schedule and at the start of each
+     * push dispatch. A failed game is counted and retried on the next poll.
      */
     async pollGames() {
       const now = Date.now();
@@ -469,6 +507,7 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
       );
 
       const statuses = [];
+      const officialGames = [];
       const summary = { polled: games.length, live: 0, final: 0, failed: 0 };
       outcomes.forEach((outcome, index) => {
         const status =
@@ -492,6 +531,17 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           awayScore: status.awayScore,
           periodDescriptor: outcome.value.periodDescriptor ?? null,
         });
+        if (isOfficialFinal(status.gameState)) {
+          officialGames.push({
+            gameId: games[index].gameId,
+            seasonId: String(
+              outcome.value.season ?? seasons.getCurrentSeasonId(),
+            ),
+            gameType: outcome.value.gameType,
+            teamIds: [outcome.value.homeTeam?.id, outcome.value.awayTeam?.id]
+              .filter(Boolean),
+          });
+        }
       });
 
       runServiceTask('live game statuses', () =>
@@ -499,6 +549,11 @@ function createScheduleService({ nhlApi, cache, seasons, runServiceTask }) {
           scheduleGamesRepository.updateGameStatuses(client, statuses),
         ),
       );
+      if (playerStatsService && officialGames.length > 0) {
+        runServiceTask('team stats after official games', () =>
+          playerStatsService.ingestOfficialGames(officialGames),
+        );
+      }
       return summary;
     },
 

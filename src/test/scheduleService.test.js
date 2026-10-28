@@ -301,7 +301,7 @@ test('getSeasonSchedule never moves a game backwards and leaves unstarted and of
   ]);
 });
 
-test('pollGames refreshes every started, not yet official game in the window and queues the DB write', async () => {
+test('pollGames refreshes every started, not yet official game in the window, queues the DB write and hands official games to player stats', async () => {
   const hoursAgo = (hours) =>
     new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
   const seasonGames = [
@@ -314,11 +314,12 @@ test('pollGames refreshes every started, not yet official game in the window and
   ];
   const nhlBoxscores = {
     1: { id: 1, gameState: 'LIVE', homeTeam: { score: 1 }, awayTeam: { score: 0 }, periodDescriptor: { number: 2 } },
-    6: { id: 6, gameState: 'OFF', homeTeam: { score: 2 }, awayTeam: { score: 3 }, periodDescriptor: { periodType: 'SO' } },
+    6: { id: 6, season: 20262027, gameType: 2, gameState: 'OFF', homeTeam: { id: 10, score: 2 }, awayTeam: { id: 6, score: 3 }, periodDescriptor: { periodType: 'SO' } },
   };
   const requestedPaths = [];
   const boxscoreTtls = [];
   const serviceTasks = [];
+  const ingestedGames = [];
   const service = createScheduleService({
     nhlApi: {
       axiosNhl: {
@@ -343,7 +344,13 @@ test('pollGames refreshes every started, not yet official game in the window and
       writeCache: async () => {},
     },
     seasons: { getCurrentSeasonId: () => '20262027' },
-    runServiceTask: (label, task) => serviceTasks.push(label),
+    runServiceTask: (label, task) => {
+      serviceTasks.push(label);
+      if (label === 'team stats after official games') task();
+    },
+    playerStatsService: {
+      ingestOfficialGames: async (games) => ingestedGames.push(...games),
+    },
   });
 
   const originalError = console.error;
@@ -362,5 +369,61 @@ test('pollGames refreshes every started, not yet official game in the window and
     '/gamecenter/6/boxscore',
   ]);
   assert.deepEqual(boxscoreTtls, [60000, 60000, 60000]);
-  assert.deepEqual(serviceTasks, ['live game statuses']);
+  assert.deepEqual(serviceTasks, [
+    'live game statuses',
+    'team stats after official games',
+  ]);
+  assert.deepEqual(ingestedGames, [
+    { gameId: 6, seasonId: '20262027', gameType: 2, teamIds: [10, 6] },
+  ]);
+});
+
+test('refreshScheduleCache sweeps the official games of the fresh schedule', async () => {
+  const sweptGames = [];
+  const rawGame = (id, gameState, gameType = 2) => ({
+    id,
+    season: 20262027,
+    gameType,
+    gameState,
+    startTimeUTC: '2026-10-27T23:00:00Z',
+    homeTeam: { id: 10 },
+    awayTeam: { id: 6 },
+  });
+  const service = createScheduleService({
+    nhlApi: {
+      axiosNhl: {
+        get: async (path) => ({
+          data: path === '/schedule/2026-09-01'
+            ? { gameWeek: [{ games: [rawGame(1, 'OFF'), rawGame(2, 'FUT')] }] }
+            : {},
+        }),
+      },
+    },
+    cache: { CACHE_TYPES, writeCache: async () => {} },
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    runServiceTask: () => {},
+    playerStatsService: {
+      sweepTeamStats: async (games) => {
+        sweptGames.push(...games);
+        return {};
+      },
+    },
+  });
+
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    await service.refreshScheduleCache();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.deepEqual(sweptGames, [
+    {
+      gameId: 1,
+      seasonId: '20262027',
+      gameType: 2,
+      teamIds: [10, 6],
+    },
+  ]);
 });

@@ -243,7 +243,7 @@ test('standings uses the season cache key and maps standings', async () => {
   assert.equal(body.standings[0].clinchingIndicator, 'x');
 });
 
-test('player routes key caches by category or team, and season', async () => {
+test('league-wide player routes key caches by category and season', async () => {
   const get = (path, cacheKey, payload) =>
     getCached(playerRouter, '/player', path, cacheKey, payload);
 
@@ -264,8 +264,8 @@ test('player routes key caches by category or team, and season', async () => {
   assert.equal(goalieLeaders[0].value, 0.925);
 
   const skaters = await get(
-    '/player/skater/summary?teamId=10&season=20232024',
-    [CACHE_TYPES.PLAYER, 'skater_summary_10_20232024'],
+    '/player/skater/summary?season=20232024',
+    [CACHE_TYPES.PLAYER, 'skater_summary_league_20232024'],
     { data: [{ playerId: 29, skaterFullName: 'Nathan MacKinnon', goals: 51 }] },
   );
   assert.equal(skaters[0].playerId, 29);
@@ -274,8 +274,8 @@ test('player routes key caches by category or team, and season', async () => {
   const corsi = { data: [{ playerId: 29, satPct: 55.1 }] };
   assert.deepEqual(
     await get(
-      '/player/skater/corsi?teamId=10&season=20232024',
-      [CACHE_TYPES.PLAYER, 'skater_corsi_10_20232024'],
+      '/player/skater/corsi?season=20232024',
+      [CACHE_TYPES.PLAYER, 'skater_corsi_all_20232024'],
       corsi,
     ),
     corsi,
@@ -288,16 +288,16 @@ test('player routes key caches by category or team, and season', async () => {
   };
   assert.deepEqual(
     await get(
-      '/player/skater/faceoffs?teamId=10&season=20232024',
-      [CACHE_TYPES.PLAYER, 'skater_faceoffs_10_20232024'],
+      '/player/skater/faceoffs?season=20232024',
+      [CACHE_TYPES.PLAYER, 'skater_faceoffs_all_20232024'],
       faceoffs,
     ),
     faceoffs,
   );
 
   const goalies = await get(
-    '/player/goalie/summary?teamId=10&season=20232024',
-    [CACHE_TYPES.PLAYER, 'goalie_summary_10_20232024'],
+    '/player/goalie/summary?season=20232024',
+    [CACHE_TYPES.PLAYER, 'goalie_summary_league_20232024'],
     { data: [{ goalieId: 35, goalieFullName: 'Goalie Name', wins: 30 }] },
   );
   assert.equal(goalies[0].goalieId, 35);
@@ -347,8 +347,8 @@ test('team routes key caches by team and season', async () => {
   assert.equal(schedule.games[0].homeTeam, 'COL');
 
   const stats = await get(
-    '/team/21?season=20232024',
-    [CACHE_TYPES.TEAM, 'summary_21_20232024'],
+    '/team?season=20232024',
+    [CACHE_TYPES.TEAM, 'summary_all_20232024'],
     { data: [{ teamId: 21, wins: 50 }] },
   );
   assert.equal(stats.data[0].wins, 50);
