@@ -46,6 +46,14 @@ async function listStoredReports(client, seasonId, teamId) {
   return reportRows.map((reportRow) => reportRow.report);
 }
 
+/** When any stored report last changed, or null when none is stored. */
+async function getLatestReportUpdate(client) {
+  const { rows: latestRows } = await client.query(
+    'SELECT max(updated_at) AS updated_at FROM team_stat_reports',
+  );
+  return latestRows[0]?.updated_at ?? null;
+}
+
 /** Upserts one team's stat report payload for a season. */
 async function upsertTeamStatReport(client, seasonId, teamId, report, payload) {
   await client.query(
@@ -96,6 +104,7 @@ module.exports = {
   getTeamStatReport,
   listTeamStatReports,
   listStoredReports,
+  getLatestReportUpdate,
   upsertTeamStatReport,
   claimIngestedGames,
   markGamesCaughtUp,

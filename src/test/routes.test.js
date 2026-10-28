@@ -312,6 +312,11 @@ test('league-wide player routes serve the stored league reports', async () => {
   assert.equal(goalies[0].goalieId, 35);
   assert.equal(goalies[0].wins, 30);
   assert.deepEqual(cacheState.calls, []);
+
+  const versionResponse = await request(app, '/player/stats/version');
+  assert.equal(versionResponse.status, 200);
+  assert.deepEqual(versionResponse.body, { version: null });
+  assert.equal(versionResponse.headers['cache-control'], 'no-store');
 });
 
 test('team roster and schedule routes key caches by team and season', async () => {

@@ -11,6 +11,7 @@ const {
  *   GET /player/skater/corsi?teamId=
  *   GET /player/skater/faceoffs?teamId=
  *   GET /player/goalie/summary?teamId=
+ *   GET /player/stats/version   -> { version }, changes when stored stats do
  */
 function createPlayerRouter({ playerStatsService, statLeaderService }) {
   const router = express.Router();
@@ -86,6 +87,15 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
           req.seasonId,
         ),
       );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/stats/version', async (req, res, next) => {
+    try {
+      res.set('Cache-Control', 'no-store');
+      res.send(await playerStatsService.getStatsVersion());
     } catch (error) {
       next(error);
     }
