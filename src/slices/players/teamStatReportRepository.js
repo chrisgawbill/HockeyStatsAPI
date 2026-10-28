@@ -27,32 +27,33 @@ async function upsertTeamStatReport(client, seasonId, teamId, report, payload) {
 }
 
 /**
- * Records an official game as ingested; true only for the call that recorded
- * it, so concurrent or repeated polls refresh its teams once.
+ * Records official games as ingested and returns the ids this call recorded,
+ * so concurrent or repeated polls and sweeps refresh their teams once.
  */
-async function claimIngestedGame(client, gameId) {
-  const { rowCount } = await client.query(
+async function claimIngestedGames(client, gameIds) {
+  const { rows: claimedRows } = await client.query(
     `
 		INSERT INTO team_stats_ingested_games (game_id)
-		VALUES ($1)
+		SELECT unnest($1::bigint[])
 		ON CONFLICT (game_id) DO NOTHING
+		RETURNING game_id
 		`,
-    [gameId],
+    [gameIds],
   );
-  return rowCount === 1;
+  return claimedRows.map((claimedRow) => Number(claimedRow.game_id));
 }
 
-/** Forgets an ingested game so the next poll retries it. */
-async function releaseIngestedGame(client, gameId) {
+/** Forgets ingested games so the next poll or sweep retries them. */
+async function releaseIngestedGames(client, gameIds) {
   await client.query(
-    'DELETE FROM team_stats_ingested_games WHERE game_id = $1',
-    [gameId],
+    'DELETE FROM team_stats_ingested_games WHERE game_id = ANY($1::bigint[])',
+    [gameIds],
   );
 }
 
 module.exports = {
   getTeamStatReport,
   upsertTeamStatReport,
-  claimIngestedGame,
-  releaseIngestedGame,
+  claimIngestedGames,
+  releaseIngestedGames,
 };

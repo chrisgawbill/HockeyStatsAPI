@@ -74,6 +74,23 @@ function mapSeasonSchedule(weeklyPayload) {
 }
 
 /**
+ * The official (`OFF`) games of a raw season schedule, shaped for the player
+ * stats sweep.
+ */
+function listOfficialGames(weeklyPayload, seasonId) {
+  return (weeklyPayload?.gameWeek ?? [])
+    .flatMap((week) => week.games ?? [])
+    .filter((rawGame) => isOfficialFinal(rawGame.gameState))
+    .map((rawGame) => ({
+      gameId: rawGame.id,
+      seasonId: String(rawGame.season ?? seasonId),
+      gameType: rawGame.gameType,
+      teamIds: [rawGame.homeTeam?.id, rawGame.awayTeam?.id].filter(Boolean),
+      startTimeUTC: rawGame.startTimeUTC,
+    }));
+}
+
+/**
  * Local-time-aware short weekday for a YYYY-MM-DD club-schedule date.
  * (The club-schedule endpoint has no dayAbbrev like the weekly endpoint does.)
  * @param {string} gameDate
@@ -161,7 +178,10 @@ function listSeasonWeekDates(seasonId) {
  *   cache: typeof import('#platform/cacheManager.js'),
  *   seasons: typeof import('#platform/seasonHelper.js'),
  *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
- *   playerStatsService?: { ingestOfficialGames(games: object[]): Promise<object> },
+ *   playerStatsService?: {
+ *     ingestOfficialGames(games: object[]): Promise<object>,
+ *     sweepTeamStats(games: object[]): Promise<object>,
+ *   },
  * }} deps
  */
 function createScheduleService({
@@ -380,8 +400,10 @@ function createScheduleService({
     /**
      * Re-fetches the current season's schedule and overwrites its cache entry.
      * Invoked on a timer by the refresh scheduler so the cached schedule stays
-     * current without a user request triggering the fetch. Errors are logged,
-     * not thrown, so a failed refresh never crashes the scheduler.
+     * current without a user request triggering the fetch, then sweeps the
+     * season's official games into the stored team player stats (see
+     * `sweepTeamStats`). Errors are logged, not thrown, so a failed refresh
+     * never crashes the scheduler.
      */
     async refreshScheduleCache() {
       try {
@@ -389,6 +411,15 @@ function createScheduleService({
         const schedulePayload = await fetchSeasonSchedule(seasonId);
         await writeCache(CACHE_TYPES.SCHEDULE, seasonId, schedulePayload);
         console.log('Schedule cache refreshed at', new Date().toISOString());
+        if (!playerStatsService) return;
+        try {
+          const sweepSummary = await playerStatsService.sweepTeamStats(
+            listOfficialGames(schedulePayload, seasonId),
+          );
+          console.log('Team stats sweep:', JSON.stringify(sweepSummary));
+        } catch (error) {
+          console.error('Team stats sweep failed:', error);
+        }
       } catch (error) {
         console.error('Failed to refresh schedule cache:', error);
       }

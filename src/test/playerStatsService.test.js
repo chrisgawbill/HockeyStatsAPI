@@ -119,13 +119,13 @@ function memoryDb({ failReads = false } = {}) {
         return { rowCount: 1 };
       }
       if (sql.includes('INSERT INTO team_stats_ingested_games')) {
-        if (ingestedGames.has(params[0])) return { rowCount: 0 };
-        ingestedGames.add(params[0]);
-        return { rowCount: 1 };
+        const claimed = params[0].filter((gameId) => !ingestedGames.has(gameId));
+        claimed.forEach((gameId) => ingestedGames.add(gameId));
+        return { rows: claimed.map((gameId) => ({ game_id: String(gameId) })) };
       }
       if (sql.includes('DELETE FROM team_stats_ingested_games')) {
-        ingestedGames.delete(params[0]);
-        return { rowCount: 1 };
+        params[0].forEach((gameId) => ingestedGames.delete(gameId));
+        return { rowCount: params[0].length };
       }
       return { rows: [], rowCount: 0 };
     },
@@ -207,6 +207,8 @@ test('an official regular-season game refreshes both teams once; a failed refres
     assert.deepEqual(await failing.service.ingestOfficialGames([game]), {
       ingested: 0,
       failed: 1,
+      teamsRefreshed: 0,
+      teamsFailed: 2,
     });
   } finally {
     console.error = originalError;
@@ -219,6 +221,8 @@ test('an official regular-season game refreshes both teams once; a failed refres
   assert.deepEqual(await service.ingestOfficialGames([game, preseasonGame]), {
     ingested: 1,
     failed: 0,
+    teamsRefreshed: 2,
+    teamsFailed: 0,
   });
   assert.equal(requestedUrls.length, 8);
   assert.equal(db.reports.size, 8);
@@ -228,8 +232,46 @@ test('an official regular-season game refreshes both teams once; a failed refres
   assert.deepEqual(await service.ingestOfficialGames([game]), {
     ingested: 0,
     failed: 0,
+    teamsRefreshed: 0,
+    teamsFailed: 0,
   });
   assert.equal(requestedUrls.length, 8);
+});
+
+test('the sweep ingests missed games, refreshes each team once, and re-refreshes recent games', async () => {
+  const db = memoryDb();
+  const now = Date.parse('2026-10-28T12:00:00Z');
+  const officialGame = (gameId, teamIds, hoursAgo) => ({
+    gameId,
+    seasonId: '20252026',
+    gameType: 2,
+    teamIds,
+    startTimeUTC: new Date(now - hoursAgo * 60 * 60 * 1000).toISOString(),
+  });
+  const oldIngested = officialGame(1, [10, 6], 72);
+  const oldMissed = officialGame(2, [10, 8], 48);
+  const recentIngested = officialGame(3, [22, 20], 3);
+  const oldDone = officialGame(4, [1, 2], 96);
+  [1, 3, 4].forEach((gameId) => db.ingestedGames.add(gameId));
+
+  const { service, requestedUrls } = makeDbService(db, () => skaterRows(1));
+  const summary = await service.sweepTeamStats(
+    [oldIngested, oldMissed, recentIngested, oldDone],
+    now,
+  );
+
+  assert.deepEqual(summary, {
+    ingested: 1,
+    failed: 0,
+    teamsRefreshed: 4,
+    teamsFailed: 0,
+  });
+  assert.equal(requestedUrls.length, 16);
+  for (const teamId of [10, 8, 22, 20]) {
+    assert.ok(db.reports.has(`20252026:${teamId}:goalie_summary`));
+  }
+  assert.ok(!db.reports.has('20252026:6:goalie_summary'));
+  assert.ok(db.ingestedGames.has(2));
 });
 
 test('summary rows are persisted on a fresh fetch, not on cache hits', async () => {

@@ -377,3 +377,54 @@ test('pollGames refreshes every started, not yet official game in the window, qu
     { gameId: 6, seasonId: '20262027', gameType: 2, teamIds: [10, 6] },
   ]);
 });
+
+test('refreshScheduleCache sweeps the official games of the fresh schedule', async () => {
+  const sweptGames = [];
+  const rawGame = (id, gameState, gameType = 2) => ({
+    id,
+    season: 20262027,
+    gameType,
+    gameState,
+    startTimeUTC: '2026-10-27T23:00:00Z',
+    homeTeam: { id: 10 },
+    awayTeam: { id: 6 },
+  });
+  const service = createScheduleService({
+    nhlApi: {
+      axiosNhl: {
+        get: async (path) => ({
+          data: path === '/schedule/2026-09-01'
+            ? { gameWeek: [{ games: [rawGame(1, 'OFF'), rawGame(2, 'FUT')] }] }
+            : {},
+        }),
+      },
+    },
+    cache: { CACHE_TYPES, writeCache: async () => {} },
+    seasons: { getCurrentSeasonId: () => '20262027' },
+    runServiceTask: () => {},
+    playerStatsService: {
+      sweepTeamStats: async (games) => {
+        sweptGames.push(...games);
+        return {};
+      },
+    },
+  });
+
+  const originalLog = console.log;
+  console.log = () => {};
+  try {
+    await service.refreshScheduleCache();
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.deepEqual(sweptGames, [
+    {
+      gameId: 1,
+      seasonId: '20262027',
+      gameType: 2,
+      teamIds: [10, 6],
+      startTimeUTC: '2026-10-27T23:00:00Z',
+    },
+  ]);
+});
