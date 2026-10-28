@@ -13,6 +13,22 @@ async function getTeamStatReport(client, seasonId, teamId, report) {
   return reportRows[0]?.payload ?? null;
 }
 
+/** Every team's stored payload of one report for a season, as `{ teamId, payload }`. */
+async function listTeamStatReports(client, seasonId, report) {
+  const { rows: reportRows } = await client.query(
+    `
+		SELECT team_id, payload
+		FROM team_player_stat_reports
+		WHERE season_id = $1 AND report = $2
+		`,
+    [seasonId, report],
+  );
+  return reportRows.map((reportRow) => ({
+    teamId: reportRow.team_id,
+    payload: reportRow.payload,
+  }));
+}
+
 /** Upserts one team's stat report payload for a season. */
 async function upsertTeamStatReport(client, seasonId, teamId, report, payload) {
   await client.query(
@@ -27,33 +43,42 @@ async function upsertTeamStatReport(client, seasonId, teamId, report, payload) {
 }
 
 /**
- * Records official games as ingested and returns the ids this call recorded,
- * so concurrent or repeated polls and sweeps refresh their teams once.
+ * Claims official games for a refresh and returns the ids this call claimed:
+ * games never claimed, plus games not caught up whose last claim is older
+ * than `retryAfterSeconds`. Concurrent or repeated polls claim a game once.
  */
-async function claimIngestedGames(client, gameIds) {
+async function claimIngestedGames(client, gameIds, retryAfterSeconds) {
   const { rows: claimedRows } = await client.query(
     `
 		INSERT INTO team_stats_ingested_games (game_id)
 		SELECT unnest($1::bigint[])
-		ON CONFLICT (game_id) DO NOTHING
+		ON CONFLICT (game_id) DO UPDATE SET ingested_at = now()
+		WHERE NOT team_stats_ingested_games.caught_up
+			AND team_stats_ingested_games.ingested_at
+				< now() - make_interval(secs => $2)
 		RETURNING game_id
 		`,
-    [gameIds],
+    [gameIds, retryAfterSeconds],
   );
   return claimedRows.map((claimedRow) => Number(claimedRow.game_id));
 }
 
-/** Forgets ingested games so the next poll or sweep retries them. */
-async function releaseIngestedGames(client, gameIds) {
+/** Marks claimed games as caught up, so they are never claimed again. */
+async function markGamesCaughtUp(client, gameIds) {
   await client.query(
-    'DELETE FROM team_stats_ingested_games WHERE game_id = ANY($1::bigint[])',
+    `
+		UPDATE team_stats_ingested_games
+		SET caught_up = true
+		WHERE game_id = ANY($1::bigint[])
+		`,
     [gameIds],
   );
 }
 
 module.exports = {
   getTeamStatReport,
+  listTeamStatReports,
   upsertTeamStatReport,
   claimIngestedGames,
-  releaseIngestedGames,
+  markGamesCaughtUp,
 };

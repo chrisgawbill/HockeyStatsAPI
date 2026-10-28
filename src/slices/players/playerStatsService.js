@@ -34,8 +34,20 @@ const TEAM_REPORTS = {
 /** NHL game type of regular-season games, the only ones the reports count. */
 const REGULAR_SEASON_GAME_TYPE = 2;
 
-/** The sweep refreshes again the teams of official games that started this recently. */
-const RECENT_SWEEP_MS = 24 * 60 * 60 * 1000;
+/** How long the poll waits before retrying a game whose stats were not caught up. */
+const INGEST_RETRY_SECONDS = 10 * 60;
+
+/**
+ * Games a team's stored reports count: its goalies' starts, since exactly one
+ * goalie starts each game. Null when nothing is stored.
+ */
+function countGoalieStarts(goalieSummaryPayload) {
+  if (!goalieSummaryPayload) return null;
+  return (goalieSummaryPayload.data ?? []).reduce(
+    (starts, goalie) => starts + (goalie.gamesStarted ?? 0),
+    0,
+  );
+}
 
 /**
  * Upserts a season's player stats (and the players they belong to) in one
@@ -258,49 +270,85 @@ function createPlayerStatsService({
         );
       }
     });
+    return countGoalieStarts(
+      payloads[reports.indexOf(TEAM_REPORTS.GOALIE_SUMMARY)],
+    );
+  }
+
+  /** Games counted by a team's stored reports, or null when none are stored. */
+  async function readStoredGoalieStarts(teamId, seasonId) {
+    return countGoalieStarts(
+      await runInTransaction((client) =>
+        teamStatReportRepository.getTeamStatReport(
+          client,
+          seasonId,
+          teamId,
+          TEAM_REPORTS.GOALIE_SUMMARY,
+        ),
+      ),
+    );
   }
 
   /**
-   * Claims the not yet ingested games among `games` and refreshes every team
-   * that played in a claimed game or in one of `recentGames`, once each and
-   * one team at a time. Claimed games of a team whose refresh failed are
-   * released so a later poll or sweep retries them.
+   * Refreshes both teams' stored reports once for each newly official
+   * regular-season game, from the live poll. A game is claimed first, so the
+   * poll (which keeps seeing an OFF game for hours) refreshes it once. When a
+   * refresh fails, or its goalie starts did not grow by the team's claimed
+   * games because the NHL stats service has not caught up yet, the team's
+   * games stay not caught up and a poll retries them after
+   * INGEST_RETRY_SECONDS.
+   *
+   * @param {{ gameId: number, seasonId: string, gameType: number, teamIds: number[] }[]} games
+   * @returns {Promise<{ ingested: number, retrying: number }>}
    */
-  async function refreshTeamsForGames(games, recentGames = []) {
+  async function ingestOfficialGames(games) {
     const regularSeasonGames = games.filter(
       (game) => game.gameType === REGULAR_SEASON_GAME_TYPE,
     );
+    if (regularSeasonGames.length === 0) return { ingested: 0, retrying: 0 };
     const claimedGameIds = new Set(
-      regularSeasonGames.length === 0
-        ? []
-        : await runInTransaction((client) =>
-            teamStatReportRepository.claimIngestedGames(
-              client,
-              regularSeasonGames.map((game) => game.gameId),
-            ),
-          ),
+      await runInTransaction((client) =>
+        teamStatReportRepository.claimIngestedGames(
+          client,
+          regularSeasonGames.map((game) => game.gameId),
+          INGEST_RETRY_SECONDS,
+        ),
+      ),
     );
     const claimedGames = regularSeasonGames.filter((game) =>
       claimedGameIds.has(game.gameId),
     );
 
     const teams = new Map();
-    for (const game of [...claimedGames, ...recentGames]) {
-      if (game.gameType !== REGULAR_SEASON_GAME_TYPE) continue;
+    for (const game of claimedGames) {
       for (const teamId of game.teamIds) {
-        teams.set(`${game.seasonId}:${teamId}`, {
+        const teamKey = `${game.seasonId}:${teamId}`;
+        const team = teams.get(teamKey) ?? {
           teamId,
           seasonId: game.seasonId,
-        });
+          newGames: 0,
+        };
+        team.newGames += 1;
+        teams.set(teamKey, team);
       }
     }
 
-    const failedTeamKeys = new Set();
-    for (const [teamKey, { teamId, seasonId }] of teams) {
+    const retryTeamKeys = new Set();
+    for (const [teamKey, { teamId, seasonId, newGames }] of teams) {
       try {
-        await refreshTeamReports(teamId, seasonId);
+        const storedStarts = await readStoredGoalieStarts(teamId, seasonId);
+        const refreshedStarts = await refreshTeamReports(teamId, seasonId);
+        if (
+          storedStarts !== null &&
+          refreshedStarts < storedStarts + newGames
+        ) {
+          retryTeamKeys.add(teamKey);
+          console.warn(
+            `Team stats ${teamId} ${seasonId} not caught up yet; retrying next poll`,
+          );
+        }
       } catch (error) {
-        failedTeamKeys.add(teamKey);
+        retryTeamKeys.add(teamKey);
         console.error(
           `Team stats refresh ${teamId} ${seasonId} failed:`,
           error.message,
@@ -308,52 +356,91 @@ function createPlayerStatsService({
       }
     }
 
-    const failedGameIds = claimedGames
+    const retryGameIds = claimedGames
       .filter((game) =>
         game.teamIds.some((teamId) =>
-          failedTeamKeys.has(`${game.seasonId}:${teamId}`),
+          retryTeamKeys.has(`${game.seasonId}:${teamId}`),
         ),
       )
       .map((game) => game.gameId);
-    if (failedGameIds.length > 0) {
+    const caughtUpGameIds = claimedGames
+      .map((game) => game.gameId)
+      .filter((gameId) => !retryGameIds.includes(gameId));
+    if (caughtUpGameIds.length > 0) {
       await runInTransaction((client) =>
-        teamStatReportRepository.releaseIngestedGames(client, failedGameIds),
+        teamStatReportRepository.markGamesCaughtUp(client, caughtUpGameIds),
       );
     }
-
-    return {
-      ingested: claimedGames.length - failedGameIds.length,
-      failed: failedGameIds.length,
-      teamsRefreshed: teams.size - failedTeamKeys.size,
-      teamsFailed: failedTeamKeys.size,
-    };
-  }
-
-  /**
-   * Refreshes both teams' stored reports once for each newly official
-   * regular-season game, from the live poll.
-   *
-   * @param {{ gameId: number, seasonId: string, gameType: number, teamIds: number[] }[]} games
-   */
-  async function ingestOfficialGames(games) {
-    return await refreshTeamsForGames(games);
+    return { ingested: caughtUpGameIds.length, retrying: retryGameIds.length };
   }
 
   /**
    * Backstop for the live poll, run with each scheduled schedule refresh:
-   * ingests every official game of the season the poll missed (the API was
-   * down, or the game is from before stats were stored), which also fills in
-   * teams with no stored reports, and refreshes again every team that played
-   * an official game in the last RECENT_SWEEP_MS, in case the NHL stats
-   * service had not caught up when the poll ingested it.
+   * refreshes only the teams whose stored reports count fewer games (goalie
+   * starts) than they have official regular-season games in `officialGames`,
+   * or that have nothing stored. That covers games the poll missed, teams
+   * never stored, and a poll that stored stats before the NHL caught up,
+   * while an up-to-date team costs no NHL call.
    *
-   * @param {{ gameId: number, seasonId: string, gameType: number, teamIds: number[], startTimeUTC: string }[]} officialGames
+   * @param {{ gameId: number, seasonId: string, gameType: number, teamIds: number[] }[]} officialGames
+   * @returns {Promise<{ teamsChecked: number, teamsRefreshed: number, teamsBehind: number, teamsFailed: number }>}
    */
-  async function sweepTeamStats(officialGames, now = Date.now()) {
-    const recentGames = officialGames.filter(
-      (game) => now - Date.parse(game.startTimeUTC) <= RECENT_SWEEP_MS,
-    );
-    return await refreshTeamsForGames(officialGames, recentGames);
+  async function sweepTeamStats(officialGames) {
+    const teams = new Map();
+    for (const game of officialGames) {
+      if (game.gameType !== REGULAR_SEASON_GAME_TYPE) continue;
+      for (const teamId of game.teamIds) {
+        const teamKey = `${game.seasonId}:${teamId}`;
+        const team = teams.get(teamKey) ?? {
+          teamId,
+          seasonId: game.seasonId,
+          officialGames: 0,
+        };
+        team.officialGames += 1;
+        teams.set(teamKey, team);
+      }
+    }
+
+    const storedStartsByTeamKey = new Map();
+    for (const seasonId of new Set(
+      [...teams.values()].map((team) => team.seasonId),
+    )) {
+      const storedReports = await runInTransaction((client) =>
+        teamStatReportRepository.listTeamStatReports(
+          client,
+          seasonId,
+          TEAM_REPORTS.GOALIE_SUMMARY,
+        ),
+      );
+      for (const { teamId, payload } of storedReports) {
+        storedStartsByTeamKey.set(
+          `${seasonId}:${teamId}`,
+          countGoalieStarts(payload),
+        );
+      }
+    }
+
+    const summary = {
+      teamsChecked: teams.size,
+      teamsRefreshed: 0,
+      teamsBehind: 0,
+      teamsFailed: 0,
+    };
+    for (const [teamKey, { teamId, seasonId, officialGames: games }] of teams) {
+      if ((storedStartsByTeamKey.get(teamKey) ?? -1) >= games) continue;
+      try {
+        const refreshedStarts = await refreshTeamReports(teamId, seasonId);
+        summary.teamsRefreshed += 1;
+        if (refreshedStarts < games) summary.teamsBehind += 1;
+      } catch (error) {
+        summary.teamsFailed += 1;
+        console.error(
+          `Team stats sweep ${teamId} ${seasonId} failed:`,
+          error.message,
+        );
+      }
+    }
+    return summary;
   }
 
   return {

@@ -11,10 +11,12 @@ CREATE TABLE IF NOT EXISTS team_player_stat_reports (
 	PRIMARY KEY (season_id, team_id, report)
 );
 
--- Official games whose teams' stat reports were refreshed, so the live poll
--- (which keeps seeing an OFF game until the schedule cache refreshes) only
--- refreshes them once.
+-- Official games the live poll refreshed teams for. The poll keeps seeing an
+-- OFF game until the schedule cache refreshes, so a game is claimed once;
+-- one whose stats were not caught up yet (caught_up false) can be claimed
+-- again after a cool-down.
 CREATE TABLE IF NOT EXISTS team_stats_ingested_games (
 	game_id bigint PRIMARY KEY,
+	caught_up boolean NOT NULL DEFAULT false,
 	ingested_at timestamptz NOT NULL DEFAULT now()
 );

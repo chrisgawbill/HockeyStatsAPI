@@ -86,7 +86,6 @@ function listOfficialGames(weeklyPayload, seasonId) {
       seasonId: String(rawGame.season ?? seasonId),
       gameType: rawGame.gameType,
       teamIds: [rawGame.homeTeam?.id, rawGame.awayTeam?.id].filter(Boolean),
-      startTimeUTC: rawGame.startTimeUTC,
     }));
 }
 

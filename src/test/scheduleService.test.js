@@ -424,7 +424,6 @@ test('refreshScheduleCache sweeps the official games of the fresh schedule', asy
       seasonId: '20262027',
       gameType: 2,
       teamIds: [10, 6],
-      startTimeUTC: '2026-10-27T23:00:00Z',
     },
   ]);
 });
