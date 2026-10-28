@@ -178,7 +178,7 @@ function listSeasonWeekDates(seasonId) {
  *   seasons: typeof import('#platform/seasonHelper.js'),
  *   runServiceTask: typeof import('#platform/runServiceTask.js').runServiceTask,
  *   playerStatsService?: {
- *     ingestOfficialGames(games: object[]): Promise<object>,
+ *     ingestFinalGames(games: object[]): Promise<object>,
  *     sweepTeamStats(games: object[]): Promise<object>,
  *   },
  * }} deps
@@ -489,8 +489,9 @@ function createScheduleService({
      * then writes each game's state and score to `schedule_games`. Every
      * schedule read overlays these boxscores, so After Action Reports and
      * pushes see a final without polling each user's teams. Games that are
-     * official (`OFF`) have their teams' player stats refreshed in the
-     * database. Runs from the notifier's schedule and at the start of each
+     * final (`FINAL` or `OFF`) have their teams' and the league's stats
+     * refreshed in the database, without waiting for the NHL to mark them
+     * official. Runs from the notifier's schedule and at the start of each
      * push dispatch. A failed game is counted and retried on the next poll.
      */
     async pollGames() {
@@ -507,7 +508,7 @@ function createScheduleService({
       );
 
       const statuses = [];
-      const officialGames = [];
+      const finalGames = [];
       const summary = { polled: games.length, live: 0, final: 0, failed: 0 };
       outcomes.forEach((outcome, index) => {
         const status =
@@ -531,8 +532,8 @@ function createScheduleService({
           awayScore: status.awayScore,
           periodDescriptor: outcome.value.periodDescriptor ?? null,
         });
-        if (isOfficialFinal(status.gameState)) {
-          officialGames.push({
+        if (FINAL_GAME_STATES.has(status.gameState)) {
+          finalGames.push({
             gameId: games[index].gameId,
             seasonId: String(
               outcome.value.season ?? seasons.getCurrentSeasonId(),
@@ -549,9 +550,9 @@ function createScheduleService({
           scheduleGamesRepository.updateGameStatuses(client, statuses),
         ),
       );
-      if (playerStatsService && officialGames.length > 0) {
-        runServiceTask('team stats after official games', () =>
-          playerStatsService.ingestOfficialGames(officialGames),
+      if (playerStatsService && finalGames.length > 0) {
+        runServiceTask('team stats after final games', () =>
+          playerStatsService.ingestFinalGames(finalGames),
         );
       }
       return summary;

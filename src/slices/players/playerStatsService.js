@@ -100,8 +100,12 @@ function groupStartsByScope(games) {
   return scopes;
 }
 
-/** How long the poll waits before retrying a game whose stats were not caught up. */
-const INGEST_RETRY_SECONDS = 10 * 60;
+/**
+ * How long the poll waits before retrying a game whose stats were not caught
+ * up. Under the poll's one-minute interval, so every poll retries; a retry
+ * costs one goalie summary request per scope until the NHL counts the game.
+ */
+const INGEST_RETRY_SECONDS = 45;
 
 /**
  * Games a team's stored reports count: its goalies' starts, since exactly one
@@ -162,7 +166,7 @@ async function persistPlayerStats({
  *
  * Every report is served from `team_stat_reports`: per team, and league-wide
  * under LEAGUE_TEAM_ID. Both teams' reports and the league-wide ones are
- * refreshed when a game goes official (`ingestOfficialGames`), and the sweep
+ * refreshed when a game goes final (`ingestFinalGames`), and the sweep
  * re-fetches anything behind or not refreshed in a week, so reads never call
  * the NHL. A report missing from the database (a past season, a new category)
  * is fetched once and stored.
@@ -436,17 +440,18 @@ function createPlayerStatsService({
 
   /**
    * Refreshes both teams' stored reports, and the league-wide ones, once for
-   * each newly official regular-season game, from the live poll. A game is
-   * claimed first, so the poll (which keeps seeing an OFF game for hours)
-   * refreshes it once. When a refresh fails, or its goalie starts did not grow
-   * by the claimed games' starts because the NHL stats service has not caught
-   * up yet, that scope's games stay not caught up and a poll retries them
-   * after INGEST_RETRY_SECONDS.
+   * each newly final (`FINAL` or `OFF`) regular-season game, from the live
+   * poll. A game is claimed first, so the poll (which keeps seeing a final
+   * game for hours) refreshes it once. Each scope is checked first with its
+   * goalie summary alone: until its goalie starts grew by the claimed games'
+   * starts, the NHL stats service has not counted the games yet, so nothing
+   * else is fetched and the games stay not caught up for the next poll to
+   * retry after INGEST_RETRY_SECONDS. A failed refresh is retried the same way.
    *
    * @param {{ gameId: number, seasonId: string, gameType: number, teamIds: number[] }[]} games
    * @returns {Promise<{ ingested: number, retrying: number }>}
    */
-  async function ingestOfficialGames(games) {
+  async function ingestFinalGames(games) {
     const regularSeasonGames = games.filter(
       (game) => game.gameType === REGULAR_SEASON_GAME_TYPE,
     );
@@ -469,16 +474,19 @@ function createPlayerStatsService({
       groupStartsByScope(claimedGames)) {
       try {
         const storedStarts = await readStoredGoalieStarts(teamId, seasonId);
-        const refreshedStarts = await refreshTeamReports(teamId, seasonId);
-        if (
-          storedStarts !== null &&
-          refreshedStarts < storedStarts + newStarts
-        ) {
-          retryTeamKeys.add(teamKey);
-          console.warn(
-            `Team stats ${teamId} ${seasonId} not caught up yet; retrying next poll`,
+        if (storedStarts !== null) {
+          const nhlStarts = countGoalieStarts(
+            await fetchReport(TEAM_REPORTS.GOALIE_SUMMARY, seasonId, teamId),
           );
+          if (nhlStarts < storedStarts + newStarts) {
+            retryTeamKeys.add(teamKey);
+            console.warn(
+              `Team stats ${teamId} ${seasonId} not caught up yet; retrying next poll`,
+            );
+            continue;
+          }
         }
+        await refreshTeamReports(teamId, seasonId);
       } catch (error) {
         retryTeamKeys.add(teamKey);
         console.error(
@@ -608,7 +616,20 @@ function createPlayerStatsService({
       );
     },
 
-    ingestOfficialGames,
+    /**
+     * `{ version }`: changes whenever a stored report is refreshed, so a page
+     * can poll this instead of re-reading its stats; null when none is stored.
+     */
+    async getStatsVersion() {
+      const latestUpdate = await runInTransaction((client) =>
+        teamStatReportRepository.getLatestReportUpdate(client),
+      );
+      return {
+        version: latestUpdate ? new Date(latestUpdate).toISOString() : null,
+      };
+    },
+
+    ingestFinalGames,
     sweepTeamStats,
     persistPlayerStats,
   };

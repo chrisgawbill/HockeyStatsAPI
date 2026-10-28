@@ -301,7 +301,7 @@ test('getSeasonSchedule never moves a game backwards and leaves unstarted and of
   ]);
 });
 
-test('pollGames refreshes every started, not yet official game in the window, queues the DB write and hands official games to player stats', async () => {
+test('pollGames refreshes every started, not yet official game in the window, queues the DB write and hands final games to player stats', async () => {
   const hoursAgo = (hours) =>
     new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
   const seasonGames = [
@@ -314,7 +314,7 @@ test('pollGames refreshes every started, not yet official game in the window, qu
   ];
   const nhlBoxscores = {
     1: { id: 1, gameState: 'LIVE', homeTeam: { score: 1 }, awayTeam: { score: 0 }, periodDescriptor: { number: 2 } },
-    6: { id: 6, season: 20262027, gameType: 2, gameState: 'OFF', homeTeam: { id: 10, score: 2 }, awayTeam: { id: 6, score: 3 }, periodDescriptor: { periodType: 'SO' } },
+    6: { id: 6, season: 20262027, gameType: 2, gameState: 'FINAL', homeTeam: { id: 10, score: 2 }, awayTeam: { id: 6, score: 3 }, periodDescriptor: { periodType: 'SO' } },
   };
   const requestedPaths = [];
   const boxscoreTtls = [];
@@ -346,10 +346,10 @@ test('pollGames refreshes every started, not yet official game in the window, qu
     seasons: { getCurrentSeasonId: () => '20262027' },
     runServiceTask: (label, task) => {
       serviceTasks.push(label);
-      if (label === 'team stats after official games') task();
+      if (label === 'team stats after final games') task();
     },
     playerStatsService: {
-      ingestOfficialGames: async (games) => ingestedGames.push(...games),
+      ingestFinalGames: async (games) => ingestedGames.push(...games),
     },
   });
 
@@ -371,7 +371,7 @@ test('pollGames refreshes every started, not yet official game in the window, qu
   assert.deepEqual(boxscoreTtls, [60000, 60000, 60000]);
   assert.deepEqual(serviceTasks, [
     'live game statuses',
-    'team stats after official games',
+    'team stats after final games',
   ]);
   assert.deepEqual(ingestedGames, [
     { gameId: 6, seasonId: '20262027', gameType: 2, teamIds: [10, 6] },

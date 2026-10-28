@@ -278,10 +278,11 @@ test('an unreadable database falls back to the NHL without storing', async () =>
 /** A stored goalie summary counting `starts` games. */
 const goalieReport = (starts) => ({ data: [{ goalieId: 30, gamesStarted: starts }] });
 
-test('an official game refreshes both teams once and retries, after a cool-down, while the NHL is behind', async () => {
+test('a final game is checked each poll with goalie summaries alone, and refreshed fully once the NHL counts it', async () => {
   const db = memoryDb();
   db.reports.set('20252026:10:goalie_summary', goalieReport(5));
   db.reports.set('20252026:6:goalie_summary', goalieReport(5));
+  db.reports.set('20252026:0:goalie_summary', goalieReport(10));
   db.reports.set('20252026:0:skater_leaders:goals', { goals: [] });
   let nhlStarts = 5;
   // A team's goalie summary counts its starts; the league's counts both teams'.
@@ -301,29 +302,34 @@ test('an official game refreshes both teams once and retries, after a cool-down,
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
-    assert.deepEqual(await service.ingestOfficialGames([game, preseasonGame]), {
+    // The NHL has not counted the game: one goalie summary per scope, nothing else.
+    assert.deepEqual(await service.ingestFinalGames([game, preseasonGame]), {
       ingested: 0,
       retrying: 1,
     });
-    assert.equal(requestedUrls.length, 16);
+    assert.equal(requestedUrls.length, 3);
+    assert.ok(requestedUrls.every((url) => url.startsWith('/summary?')));
 
-    db.nowMs = 5 * 60 * 1000;
-    assert.deepEqual(await service.ingestOfficialGames([game]), {
+    // A poll inside the cool-down does not retry.
+    db.nowMs = 30 * 1000;
+    assert.deepEqual(await service.ingestFinalGames([game]), {
       ingested: 0,
       retrying: 0,
     });
-    assert.equal(requestedUrls.length, 16);
+    assert.equal(requestedUrls.length, 3);
   } finally {
     console.warn = originalWarn;
   }
 
+  // The next minute's poll finds it counted: check plus full refresh per scope
+  // (5 reports per team; 5 reports and the stored leader category league-wide).
   nhlStarts = 6;
-  db.nowMs = 11 * 60 * 1000;
-  assert.deepEqual(await service.ingestOfficialGames([game]), {
+  db.nowMs = 60 * 1000;
+  assert.deepEqual(await service.ingestFinalGames([game]), {
     ingested: 1,
     retrying: 0,
   });
-  assert.equal(requestedUrls.length, 32);
+  assert.equal(requestedUrls.length, 3 + 6 + 6 + 7);
   assert.equal(db.reports.size, 16);
   assert.equal(
     db.reports.get('20252026:0:skater_leaders:goals').goals[0].value,
@@ -332,11 +338,45 @@ test('an official game refreshes both teams once and retries, after a cool-down,
   assert.equal(db.ingestedGames.has(98), false);
 
   db.nowMs = 60 * 60 * 1000;
-  assert.deepEqual(await service.ingestOfficialGames([game]), {
+  assert.deepEqual(await service.ingestFinalGames([game]), {
     ingested: 0,
     retrying: 0,
   });
-  assert.equal(requestedUrls.length, 32);
+  assert.equal(requestedUrls.length, 22);
+});
+
+test('a team never stored is refreshed fully on its first final game', async () => {
+  const db = memoryDb();
+  const game = { gameId: 99, seasonId: '20252026', gameType: 2, teamIds: [10, 6] };
+  const { service, requestedUrls } = makeDbService(db, () => [
+    { goalieId: 30, gamesStarted: 1 },
+  ]);
+
+  assert.deepEqual(await service.ingestFinalGames([game]), {
+    ingested: 1,
+    retrying: 0,
+  });
+  assert.equal(requestedUrls.length, 15);
+  assert.ok(db.reports.has('20252026:10:team_summary'));
+});
+
+test('the stats version follows the latest stored report', async () => {
+  const db = memoryDb();
+  db.withTransaction = (callback) =>
+    callback({
+      async query(sql) {
+        assert.match(sql, /max\(updated_at\)/);
+        return { rows: [{ updated_at: db.latest }] };
+      },
+    });
+  const { service } = makeDbService(db, () => []);
+
+  db.latest = null;
+  assert.deepEqual(await service.getStatsVersion(), { version: null });
+  db.latest = new Date('2026-10-28T03:15:00Z');
+  assert.deepEqual(await service.getStatsVersion(), {
+    version: '2026-10-28T03:15:00.000Z',
+  });
 });
 
 test('a game is retried while the league-wide reports are behind', async () => {
@@ -354,7 +394,7 @@ test('a game is retried while the league-wide reports are behind', async () => {
   const originalWarn = console.warn;
   console.warn = () => {};
   try {
-    assert.deepEqual(await service.ingestOfficialGames([game]), {
+    assert.deepEqual(await service.ingestFinalGames([game]), {
       ingested: 0,
       retrying: 1,
     });
@@ -371,7 +411,7 @@ test('a failed refresh leaves the game to retry', async () => {
   const originalError = console.error;
   console.error = () => {};
   try {
-    assert.deepEqual(await service.ingestOfficialGames([game]), {
+    assert.deepEqual(await service.ingestFinalGames([game]), {
       ingested: 0,
       retrying: 1,
     });
