@@ -41,14 +41,18 @@ After Action Reports are computed on request, not by a background job (the hoste
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/favorites` | `{ favorites: [{ triCode, since, pushMuted, tier, label }] }` |
-| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` (re-PUT keeps tier and label); 409 past 5 teams (accounts already over 5 keep theirs) |
+| `GET /api/favorites` | `{ favorites: [{ league, triCode, since, pushMuted, tier, label }] }`, both leagues |
+| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` (re-PUT keeps tier and label); 404 unknown AHL team, 409 past 5 teams across both leagues (accounts already over 5 keep theirs) |
 | `PATCH /api/favorites/:triCode` | Body `{ tier?, label? }` (at least one); returns `{ favorites }`; 400 bad tier/label/empty body/bad code, 404 if not a favorite |
 | `GET /api/after-action-reports` | `{ reports, unreadCount }`, newest first, at most 25 |
 | `POST /api/after-action-reports/:gameId/read` | Mark one report read (204) |
 | `POST /api/after-action-reports/read-all` | Mark the whole inbox read |
 
-`GET /api/favorites` and the favorites routes also return `pushMuted: boolean` per favorite. Every favorite team and favorite player also carries a fan category (migration 006, display only: no effect on reports or push): `tier` is `diehard`, `fan` (default for new and existing favorites) or `curious`, and `label` is optional free text (emoji allowed) or `null`. `PATCH` trims the label, caps it at 24 user-perceived characters, and treats `null` or an empty string as clearing it. All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google` or `POST /api/auth/discord`. The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
+`GET /api/favorites` and the favorites routes also return `pushMuted: boolean` per favorite. Every favorite team and favorite player also carries a fan category (migration 006, display only: no effect on reports or push): `tier` is `diehard`, `fan` (default for new and existing favorites) or `curious`, and `label` is optional free text (emoji allowed) or `null`. `PATCH` trims the label, caps it at 24 user-perceived characters, and treats `null` or an empty string as clearing it. All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google` or `POST /api/auth/discord`.
+
+AHL and NHL favorites share one list each (migration 015 adds `league`, `nhl` for existing rows, to `favorite_teams` and `favorite_players` and to their keys, since AHL tri-codes and player ids can match NHL ones). Every favorite team and player route with a tri-code or player id, `/push-mute` included, takes `?league=nhl|ahl` (default `nhl`; anything else is a 400), so the same code or id can be favorited once per league. The 5-team and 10-player limits count both leagues together. AHL team codes are 2-4 letters (Coachella Valley is `CV`) and must be an AHL team this season; an AHL player must appear in this season's AHL skater or goalie table (so one without a game yet is a 404), and AHL favorites have no headshot. After Action Reports, game pushes and the Weekly Player Report read only NHL favorites; AHL favorites are listed but produce no reports or pushes.
+
+The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
 
 `GET /team/lines/:triCode?season=` returns forward lines, defense pairs and the starting goalie derived from the team's most recent completed game's NHL shift chart (`source: "shifts"`, or `source: "none"` with empty arrays when there is no completed game or the chart is unavailable). Every response is built from a single `gameId`. To keep the NHL call budget low it reuses the existing schedule caches (10-minute current-week cache, 12-hour season cache) and the roster cache, and fetches one shift chart per game from `api.nhle.com` plus one play-by-play per game from `api-web.nhle.com` (about 2 NHL calls per game; faceoffs taken pick each line's center, falling back to roster positions if the play-by-play is unavailable, and only the faceoff plays are cached): official (`OFF`) charts and faceoff data are cached permanently and shared by both teams, while `FINAL`-but-not-official games use a 5-minute cache. Empty charts are never cached permanently, and only raw NHL payloads are cached (lines are computed on read).
 
@@ -126,8 +130,8 @@ Migration 005 adds `favorite_players` (at most 10 per user), the frozen `weekly_
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `GET /api/favorite-players` | session | `{ favorites: [{ playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }` |
-| `PUT /api/favorite-players/:playerId` / `DELETE ...` | session | Add (validated against the NHL player landing, 24-hour cache) or remove; returns `{ favorites }`; 400 bad id, 404 unknown player, 409 past 10; re-PUT keeps tier and label |
+| `GET /api/favorite-players` | session | `{ favorites: [{ league, playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }`, both leagues |
+| `PUT /api/favorite-players/:playerId` / `DELETE ...` | session | Add (validated against the NHL player landing, 24-hour cache, or for the AHL the season's skater and goalie tables) or remove; returns `{ favorites }`; 400 bad id, 404 unknown player, 409 past 10 across both leagues; re-PUT keeps tier and label |
 | `PATCH /api/favorite-players/:playerId` | session | Body `{ tier?, label? }` (at least one); returns `{ favorites }`; 400 bad tier/label/empty body/bad id, 404 if not a favorite |
 | `PUT /api/favorite-players/:playerId/push-mute` | session | Body `{ muted: boolean }`; whether the player counts in the weekly push (migration 010, default included); returns `{ favorites }`; 400 bad body/id, 404 if not a favorite |
 | `GET /api/weekly-player-reports` | session | `{ reports, unreadCount }`, newest first, at most 12 |
@@ -156,6 +160,42 @@ Rivalries (migration 011, `team_rivalries`) are site-wide, unordered team pairs:
 ## Stored stats
 
 Player stats (`/player/skater/*`, `/player/goalie/*`, stat leaders) and team summaries (`/team/:teamId?`) are served from `team_stat_reports` (migration 013), not the NHL: one raw NHL payload per season, team and report, with league-wide reports under team id 0 and stat leaders stored per category as they are first asked for. When `POST /schedule/poll` sees a regular-season game go final (`FINAL` or `OFF`), both teams' reports and the league-wide ones are re-fetched (`team_stats_ingested_games` records the game once). Until the NHL stats count the game, judged by each scope's goalie starts, only the goalie summaries are fetched and every poll (each minute) checks again. `GET /player/stats/version` returns `{ version }`, the time any stored report last changed, so the web app polls it and re-reads its stats only when it moves. The scheduled schedule refresh (3x daily) also re-fetches any team or league report that is behind its official games, or that has not been refreshed for 7 days, as a weekly check against the NHL. A report never stored (such as a past season) is fetched from the NHL on first read and stored; if the database cannot be read, the NHL payload is served unstored.
+
+## AHL data
+
+AHL data comes from HockeyTech (`lscluster.hockeytech.com/feed/`, `src/platform/ahlApiClient.js`), because the NHL API does not serve the AHL. **Risk:** the feed has no public documentation and `AHL_FEED_KEY` is the key the AHL website uses, so HockeyTech can change or block it without notice. Without the key the AHL refresh is skipped. If the feed fails, cached and stored AHL data is still served, and the NHL side is never affected.
+
+HockeyTech numbers each regular season, playoff and exhibition with its own id. `ahl_seasons` maps each one to our 8-digit season id (from its start date, with the same September 1 rollover) and an NHL-style game type (1 exhibition, 2 regular season, 3 playoffs), so `?season=` works the same for both leagues. All-star events are left out.
+
+Migration 014 adds `ahl_seasons`, `ahl_teams`, `ahl_players`, `ahl_schedule_games`, `ahl_roster_entries` and `ahl_team_stat_reports` (one raw payload per HockeyTech season, team and report; league-wide `standings`, `skaters` and `goalies` under team id 0). They are kept apart from the NHL tables because AHL ids can collide with NHL ids, and every row keeps its raw `source_payload`. The scheduled schedule refresh (3x daily) also re-fetches the current AHL season (and its playoffs once they start): seasons, teams, schedule, standings and league-wide skater and goalie stats. Rosters are stored when they are first read. There is no live AHL game poll yet. AHL cache keys start with `ahl:` and use the normal lifetimes below.
+
+### AHL read routes (`?league=ahl`)
+
+These routes take `league` (`nhl` by default, or `ahl`; anything else is a 400). Without it, or with `league=nhl`, they answer exactly as before. With `league=ahl` they serve AHL data in the NHL response shape, with `?season=` working the same way:
+
+| Route | AHL answer |
+| --- | --- |
+| `GET /standings` | `{ standings, league }` from the regular season's conference standings; a season the AHL does not have gives empty standings |
+| `GET /schedule` | `{ games, league }`: every game of the season id (exhibition, regular season and playoffs), sorted by start |
+| `GET /schedule/:gameId` | The boxscore fields the web app reads, from HockeyTech's `gameSummary` (cached forever once final, else 1 minute); `gameId` is a HockeyTech game id, 404 when malformed or unknown |
+| `GET /team/:teamId?` | `{ data, total, league }`: NHL team summary rows built from the standings; `teamId` is a HockeyTech team id |
+| `GET /team/roster/:triCode` | RosterContract plus `league`; 404 for a tri-code the AHL does not have that season |
+| `GET /team/schedule/:triCode` | `{ games, league }` of that team from the season schedule |
+| `GET /player/skater/summary`, `GET /player/goalie/summary` | Summary rows; `?teamId=` is a HockeyTech team id and reads only that team's games (`ahl:<position>:<season>:<team>` cache) |
+| `GET /player/skater/statLeaders/:stat`, `GET /player/goalie/statLeaders/:stat` | Top 10 for `goals`, `assists`, `points`, `wins`, `shutouts`, `savePctg` and `goalsAgainstAverage`; any other category (such as `faceoffLeaders`) answers `[]` |
+| `GET /player/stats/version` | `{ version, league }` from the latest stored AHL report |
+
+Object responses carry `league: "ahl"`; list responses (player summaries and stat leaders) carry it on every row. Tri-codes and ids are looked up only among AHL teams, so `TOR` with `league=ahl` is the Toronto Marlies. A savePctg or goalsAgainstAverage leader needs at least a third of the most games any goalie has played (a stand-in for the AHL's qualifying rule). `/team/lines`, `/schedule/playbyplay`, `/schedule/landing`, `/player/skater/corsi`, `/player/skater/faceoffs`, `/rivalries`, `/rink-quest` and `/python-service` answer 404 for `league=ahl`.
+
+Fields the feed does not have are `null` (never invented):
+
+- Standings: `wildcardSequence`, `leagueL10Sequence`; `teamLogo` when the team is not in that season's team list. `otLosses` counts overtime and shootout losses together, as the NHL does; `divisionSequence` is the order within the division across the conference list.
+- Schedule games: `gameCenter`, `playoffRound`, `seriesWins`, `topSeedTeamAbbrev`, `bottomSeedTeamAbbrev`, and `gameTime` while the date or time is to be decided. `broadcasts` is always `[]` and `ticketLink` is `null` except for future games with a tickets link.
+- Boxscore: `clock`, each team's `darkLogo`; skaters' `powerPlayGoals`, `shifts`, `giveaways`, `takeaways`, and `toi` (the feed sends an untracked `0:00`), and `faceoffWinningPctg` without faceoffs taken; goalies' `evenStrengthShotsAgainst`, `powerPlayShotsAgainst`, `shorthandedShotsAgainst`. Names are "F. Last" like the NHL's. There is no playoff series or three stars.
+- Team summary: `faceoffWinPct`, `shotsForPerGame`, `shotsAgainstPerGame`, `powerPlayNetPct`, `penaltyKillNetPct`, `teamShutouts`, `ties`.
+- Skater summary: `faceoffWinPct`, `toiPerGame`. Goalie `toiPerGame` is total minutes played over games played.
+- Stat leaders: `sweaterNumber`, `headshot`.
+- Positions keep HockeyTech's `F` for a forward without a listed position; `LW`/`RW` become `L`/`R`.
 
 ## Caching
 

@@ -1,9 +1,11 @@
 const express = require('express');
 const { requireAuth } = require('#presentation/middleware/requireAuth.js');
+const { validateLeague } = require('#presentation/middleware/validateLeague.js');
 
 /**
- * Favorite teams, behind requireAuth:
- *   GET    /api/favorites            -> { favorites: [{ triCode, since, pushMuted, tier, label }] }
+ * Favorite teams of both leagues, behind requireAuth. The routes with a
+ * tri-code take `?league=nhl|ahl` (default nhl):
+ *   GET    /api/favorites            -> { favorites: [{ league, triCode, since, pushMuted, tier, label }] }
  *   PATCH  /api/favorites/:triCode   body { tier?, label? } -> { favorites }
  *   PUT    /api/favorites/:triCode   -> { favorites }
  *   DELETE /api/favorites/:triCode   -> { favorites }
@@ -11,7 +13,7 @@ const { requireAuth } = require('#presentation/middleware/requireAuth.js');
  */
 function createFavoritesRouter({ afterActionReportService }) {
   const router = express.Router();
-  router.use(requireAuth);
+  router.use(requireAuth, validateLeague);
 
   router.get('/', async (req, res, next) => {
     try {
@@ -29,6 +31,7 @@ function createFavoritesRouter({ afterActionReportService }) {
         await afterActionReportService.addFavorite(
           req.userId,
           req.params.triCode,
+          req.league,
         ),
       );
     } catch (error) {
@@ -43,6 +46,7 @@ function createFavoritesRouter({ afterActionReportService }) {
           req.userId,
           req.params.triCode,
           req.body,
+          req.league,
         ),
       );
     } catch (error) {
@@ -57,6 +61,7 @@ function createFavoritesRouter({ afterActionReportService }) {
           req.userId,
           req.params.triCode,
           (req.body || {}).muted,
+          req.league,
         ),
       );
     } catch (error) {
@@ -70,6 +75,7 @@ function createFavoritesRouter({ afterActionReportService }) {
         await afterActionReportService.removeFavorite(
           req.userId,
           req.params.triCode,
+          req.league,
         ),
       );
     } catch (error) {

@@ -4,6 +4,10 @@ const {
   validateSeason,
 } = require('#presentation/middleware/validateSeason.js');
 const {
+  validateLeague,
+  nhlOnly,
+} = require('#presentation/middleware/validateLeague.js');
+const {
   pollRateLimiter: defaultPollRateLimiter,
 } = require('#presentation/middleware/rateLimiter.js');
 const { assertBearerSecret } = require('#platform/bearerSecret.js');
@@ -12,16 +16,18 @@ const { assertBearerSecret } = require('#platform/bearerSecret.js');
 const GAME_ID_PATTERN = /^\d{10}$/;
 
 /**
- * Schedule endpoints:
- *   GET /schedule/?season=          season schedule as `{ games }`
+ * Schedule endpoints (`league=ahl` where noted, else NHL-only: 404):
+ *   GET /schedule/?season=          season schedule as `{ games }` (AHL too)
  *   GET /schedule/landing/:gameID   raw gamecenter landing payload
  *   GET /schedule/playbyplay/:gameID  shots and goals as a PlayByPlayContract
- *   GET /schedule/:gameID           raw gamecenter boxscore payload
+ *   GET /schedule/:gameID           raw gamecenter boxscore payload (AHL:
+ *                                   the boxscore fields the web app reads)
  *   POST /schedule/poll             Bearer CRON_SECRET; league-wide live poll
  *                                   -> { polled, live, final, failed }
  */
 function createScheduleRouter({
   scheduleService,
+  ahlReadService,
   pollRateLimiter = defaultPollRateLimiter,
 }) {
   const router = express.Router();
@@ -35,15 +41,16 @@ function createScheduleRouter({
     }
   });
 
-  router.get('/', validateSeason, async (req, res, next) => {
+  router.get('/', validateSeason, validateLeague, async (req, res, next) => {
     try {
-      res.send(await scheduleService.getSeasonSchedule(req.seasonId));
+      const service = req.league === 'ahl' ? ahlReadService : scheduleService;
+      res.send(await service.getSeasonSchedule(req.seasonId));
     } catch (error) {
       next(error);
     }
   });
 
-  router.get('/landing/:gameID', async (req, res, next) => {
+  router.get('/landing/:gameID', nhlOnly, async (req, res, next) => {
     try {
       res.send(await scheduleService.getGameLanding(req.params.gameID));
     } catch (error) {
@@ -51,7 +58,7 @@ function createScheduleRouter({
     }
   });
 
-  router.get('/playbyplay/:gameID', async (req, res, next) => {
+  router.get('/playbyplay/:gameID', nhlOnly, async (req, res, next) => {
     if (!GAME_ID_PATTERN.test(req.params.gameID)) {
       return next(createError(404, 'Unknown game.'));
     }
@@ -62,9 +69,10 @@ function createScheduleRouter({
     }
   });
 
-  router.get('/:gameID', async (req, res, next) => {
+  router.get('/:gameID', validateLeague, async (req, res, next) => {
     try {
-      res.send(await scheduleService.getGameBoxscore(req.params.gameID));
+      const service = req.league === 'ahl' ? ahlReadService : scheduleService;
+      res.send(await service.getGameBoxscore(req.params.gameID));
     } catch (error) {
       next(error);
     }

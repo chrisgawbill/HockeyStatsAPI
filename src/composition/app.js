@@ -29,6 +29,7 @@ const {
 } = require('#presentation/routes/weeklyPlayerReports.js');
 const { createRivalriesRouter } = require('#presentation/routes/rivalries.js');
 const { createRinkQuestRouter } = require('#presentation/routes/rinkQuest.js');
+const { nhlOnly } = require('#presentation/middleware/validateLeague.js');
 
 /**
  * CORS settings. 'Authorization' is allowed for the bearer-token Google-account
@@ -69,9 +70,9 @@ function createApp(container) {
   app.use('/player', createPlayerRouter(container));
   app.use('/team', createTeamRouter(container));
   app.use('/schedule', createScheduleRouter(container));
-  app.use('/rivalries', createRivalriesRouter(container));
-  app.use('/rink-quest', createRinkQuestRouter(container));
-  app.use('/python-service', createAiRouter(container));
+  app.use('/rivalries', nhlOnly, createRivalriesRouter(container));
+  app.use('/rink-quest', nhlOnly, createRinkQuestRouter(container));
+  app.use('/python-service', nhlOnly, createAiRouter(container));
   app.use('/api/auth', createAuthRouter(container));
   app.use('/api/board-game', createBoardGameRouter(container));
   app.use('/api/favorites', createFavoritesRouter(container));

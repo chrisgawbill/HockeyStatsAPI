@@ -64,13 +64,16 @@ function onError(error) {
   }
 }
 
-/** Logs the bound address and starts the schedule cache refresh timer. */
+/** Logs the bound address and starts the schedule cache refresh timer (NHL, then AHL). */
 function onListening() {
   const address = server.address();
   const bind =
     typeof address === 'string' ? 'pipe ' + address : 'port ' + address.port;
   debug('Listening on ' + bind);
-  scheduleNextRefresh(() => container.scheduleService.refreshScheduleCache());
+  scheduleNextRefresh(async () => {
+    await container.scheduleService.refreshScheduleCache();
+    await container.ahlService.refreshCurrentSeason();
+  });
 }
 
 /** Closes the server and database pools, force-exiting if that takes over 10 seconds. */

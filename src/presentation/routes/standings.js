@@ -2,18 +2,23 @@ const express = require('express');
 const {
   validateSeason,
 } = require('#presentation/middleware/validateSeason.js');
+const {
+  validateLeague,
+} = require('#presentation/middleware/validateLeague.js');
 
 /**
- * GET /standings/?season=
+ * GET /standings/?season=&league=
  * Reads the validated season from `req.seasonId` and returns whatever the
- * standings service produces. No fetching, caching, or mapping lives here.
+ * standings service (or the AHL read service for `league=ahl`) produces. No
+ * fetching, caching, or mapping lives here.
  */
-function createStandingsRouter({ standingsService }) {
+function createStandingsRouter({ standingsService, ahlReadService }) {
   const router = express.Router();
 
-  router.get('/', validateSeason, async (req, res, next) => {
+  router.get('/', validateSeason, validateLeague, async (req, res, next) => {
     try {
-      res.send(await standingsService.getStandings(req.seasonId));
+      const service = req.league === 'ahl' ? ahlReadService : standingsService;
+      res.send(await service.getStandings(req.seasonId));
     } catch (error) {
       next(error);
     }

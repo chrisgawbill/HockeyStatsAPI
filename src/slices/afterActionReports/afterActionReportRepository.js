@@ -2,10 +2,10 @@
 async function listFavoriteTeams(client, userId) {
   const { rows: favoriteTeamRows } = await client.query(
     `
-		SELECT team_tri_code, created_at, push_muted, tier, label
+		SELECT team_tri_code, league, created_at, push_muted, tier, label
 		FROM favorite_teams
 		WHERE user_id = $1
-		ORDER BY created_at, team_tri_code
+		ORDER BY created_at, league, team_tri_code
 		`,
     [userId],
   );
@@ -13,12 +13,13 @@ async function listFavoriteTeams(client, userId) {
 }
 
 /**
- * Adds a favorite unless the user already has `limit` others; re-favoriting
+ * Adds a favorite unless the user already has `limit` others in either
+ * league (the cap is shared); re-favoriting
  * keeps the original `created_at`. Returns false only when the cap blocked a
  * new favorite. A per-user advisory lock serializes adds so two tabs cannot
  * both pass the cap check.
  */
-async function insertFavoriteTeam(client, { userId, triCode, limit }) {
+async function insertFavoriteTeam(client, { userId, triCode, league, limit }) {
   await client.query(
     "SELECT pg_advisory_xact_lock(hashtext('favorite_teams'), $1::int)",
     [userId],
@@ -28,31 +29,31 @@ async function insertFavoriteTeam(client, { userId, triCode, limit }) {
   } = await client.query(
     `
 		SELECT
-			COALESCE(bool_or(team_tri_code = $2), false) AS is_already_favorite,
+			COALESCE(bool_or(team_tri_code = $2 AND league = $3), false) AS is_already_favorite,
 			count(*)::int AS favorite_count
 		FROM favorite_teams
 		WHERE user_id = $1
 		`,
-    [userId, triCode],
+    [userId, triCode, league],
   );
   if (favoriteCounts.is_already_favorite) return true;
   if (favoriteCounts.favorite_count >= limit) return false;
   await client.query(
     `
-		INSERT INTO favorite_teams (user_id, team_tri_code)
-		VALUES ($1, $2)
-		ON CONFLICT (user_id, team_tri_code) DO NOTHING
+		INSERT INTO favorite_teams (user_id, team_tri_code, league)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (user_id, league, team_tri_code) DO NOTHING
 		`,
-    [userId, triCode],
+    [userId, triCode, league],
   );
   return true;
 }
 
 /** Removes a favorite team; a missing one is ignored. */
-async function deleteFavoriteTeam(client, { userId, triCode }) {
+async function deleteFavoriteTeam(client, { userId, triCode, league }) {
   await client.query(
-    'DELETE FROM favorite_teams WHERE user_id = $1 AND team_tri_code = $2',
-    [userId, triCode],
+    'DELETE FROM favorite_teams WHERE user_id = $1 AND team_tri_code = $2 AND league = $3',
+    [userId, triCode, league],
   );
 }
 
@@ -84,14 +85,14 @@ async function insertReadGameIds(client, { userId, gameIds }) {
 }
 
 /** Sets a favorite team's tier and/or label; returns the updated row count (0 when not a favorite). */
-async function updateFavoritePushMuted(client, { userId, triCode, muted }) {
+async function updateFavoritePushMuted(client, { userId, triCode, league, muted }) {
   const { rowCount: updatedCount } = await client.query(
     `
 		UPDATE favorite_teams
 		SET push_muted = $3
-		WHERE user_id = $1 AND team_tri_code = $2
+		WHERE user_id = $1 AND team_tri_code = $2 AND league = $4
 		`,
-    [userId, triCode, muted],
+    [userId, triCode, muted, league],
   );
   return updatedCount;
 }
@@ -99,16 +100,16 @@ async function updateFavoritePushMuted(client, { userId, triCode, muted }) {
 /** Sets a favorite team's tier and/or label; returns the updated row count (0 when not a favorite). */
 async function updateFavoriteTeamCategory(
   client,
-  { userId, triCode, changeTier, tier, changeLabel, label },
+  { userId, triCode, league, changeTier, tier, changeLabel, label },
 ) {
   const { rowCount: updatedRowCount } = await client.query(
     `
 		UPDATE favorite_teams
 		SET tier = CASE WHEN $3::boolean THEN $4::text ELSE tier END,
 			label = CASE WHEN $5::boolean THEN $6::text ELSE label END
-		WHERE user_id = $1 AND team_tri_code = $2
+		WHERE user_id = $1 AND team_tri_code = $2 AND league = $7
 		`,
-    [userId, triCode, changeTier, tier, changeLabel, label],
+    [userId, triCode, changeTier, tier, changeLabel, label, league],
   );
   return updatedRowCount;
 }

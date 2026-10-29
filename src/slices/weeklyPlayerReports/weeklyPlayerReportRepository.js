@@ -2,34 +2,36 @@
 async function listFavoritePlayers(client, userId) {
   const { rows: favoritePlayerRows } = await client.query(
     `
-		SELECT player_id, full_name, team_tri_code, position, headshot, created_at, tier, label, push_muted
+		SELECT player_id, league, full_name, team_tri_code, position, headshot, created_at, tier, label, push_muted
 		FROM favorite_players
 		WHERE user_id = $1
-		ORDER BY created_at, player_id
+		ORDER BY created_at, league, player_id
 		`,
     [userId],
   );
   return favoritePlayerRows;
 }
 
-/** Every favorite of every user, for the weekly dispatch. */
+/** Every NHL favorite of every user, for the weekly dispatch. */
 async function listAllFavoritePlayers(client) {
   const { rows: allFavoritePlayerRows } = await client.query(
     `
-		SELECT user_id, player_id, full_name, team_tri_code, position, headshot, created_at, tier, label, push_muted
+		SELECT user_id, player_id, league, full_name, team_tri_code, position, headshot, created_at, tier, label, push_muted
 		FROM favorite_players
+		WHERE league = 'nhl'
 		ORDER BY user_id, created_at, player_id
 		`,
   );
   return allFavoritePlayerRows;
 }
 
-/** Every user's favorite teams with their fan category, for the weekly dispatch. */
+/** Every user's NHL favorite teams with their fan category, for the weekly dispatch. */
 async function listAllFavoriteTeams(client) {
   const { rows: allFavoriteTeamRows } = await client.query(
     `
 		SELECT user_id, team_tri_code, tier, label
 		FROM favorite_teams
+		WHERE league = 'nhl'
 		ORDER BY user_id, created_at, team_tri_code
 		`,
   );
@@ -37,14 +39,15 @@ async function listAllFavoriteTeams(client) {
 }
 
 /**
- * Adds a favorite unless the user already has `limit` others. Re-favoriting
+ * Adds a favorite unless the user already has `limit` others in either league
+ * (the cap is shared). Re-favoriting
  * keeps the original `created_at` and refreshes the display fields. Returns
  * false only when the cap blocked a new favorite. A per-user advisory lock
  * serializes adds so two tabs cannot both pass the cap check.
  */
 async function insertFavoritePlayer(
   client,
-  { userId, playerId, fullName, teamTriCode, position, headshot, limit },
+  { userId, playerId, league, fullName, teamTriCode, position, headshot, limit },
 ) {
   await client.query(
     "SELECT pg_advisory_xact_lock(hashtext('favorite_players'), $1::int)",
@@ -53,41 +56,45 @@ async function insertFavoritePlayer(
   const { rowCount: insertedCount } = await client.query(
     `
 		INSERT INTO favorite_players
-			(user_id, player_id, full_name, team_tri_code, position, headshot)
-		SELECT $1, $2, $3, $4, $5, $6
+			(user_id, player_id, full_name, team_tri_code, position, headshot, league)
+		SELECT $1, $2, $3, $4, $5, $6, $8
 		WHERE EXISTS (
-			SELECT 1 FROM favorite_players WHERE user_id = $1 AND player_id = $2
+			SELECT 1 FROM favorite_players
+			WHERE user_id = $1 AND player_id = $2 AND league = $8
 		) OR (
 			SELECT count(*) FROM favorite_players WHERE user_id = $1
 		) < $7
-		ON CONFLICT (user_id, player_id) DO UPDATE
+		ON CONFLICT (user_id, league, player_id) DO UPDATE
 		SET full_name = EXCLUDED.full_name,
 			team_tri_code = EXCLUDED.team_tri_code,
 			position = EXCLUDED.position,
 			headshot = EXCLUDED.headshot
 		`,
-    [userId, playerId, fullName, teamTriCode, position, headshot, limit],
+    [userId, playerId, fullName, teamTriCode, position, headshot, limit, league],
   );
   return insertedCount > 0;
 }
 
 /** Removes a favorite; a missing one is ignored. */
-async function deleteFavoritePlayer(client, { userId, playerId }) {
+async function deleteFavoritePlayer(client, { userId, playerId, league }) {
   await client.query(
-    'DELETE FROM favorite_players WHERE user_id = $1 AND player_id = $2',
-    [userId, playerId],
+    'DELETE FROM favorite_players WHERE user_id = $1 AND player_id = $2 AND league = $3',
+    [userId, playerId, league],
   );
 }
 
 /** Sets whether a favorite player counts in the weekly-report push; returns the updated row count (0 when not a favorite). */
-async function updateFavoritePlayerPushMuted(client, { userId, playerId, muted }) {
+async function updateFavoritePlayerPushMuted(
+  client,
+  { userId, playerId, league, muted },
+) {
   const { rowCount: updatedCount } = await client.query(
     `
 		UPDATE favorite_players
 		SET push_muted = $3
-		WHERE user_id = $1 AND player_id = $2
+		WHERE user_id = $1 AND player_id = $2 AND league = $4
 		`,
-    [userId, playerId, muted],
+    [userId, playerId, muted, league],
   );
   return updatedCount;
 }
@@ -95,16 +102,16 @@ async function updateFavoritePlayerPushMuted(client, { userId, playerId, muted }
 /** Sets a favorite player's tier and/or label; returns the updated row count (0 when not a favorite). */
 async function updateFavoritePlayerCategory(
   client,
-  { userId, playerId, changeTier, tier, changeLabel, label },
+  { userId, playerId, league, changeTier, tier, changeLabel, label },
 ) {
   const { rowCount: updatedRowCount } = await client.query(
     `
 		UPDATE favorite_players
 		SET tier = CASE WHEN $3::boolean THEN $4::text ELSE tier END,
 			label = CASE WHEN $5::boolean THEN $6::text ELSE label END
-		WHERE user_id = $1 AND player_id = $2
+		WHERE user_id = $1 AND player_id = $2 AND league = $7
 		`,
-    [userId, playerId, changeTier, tier, changeLabel, label],
+    [userId, playerId, changeTier, tier, changeLabel, label, league],
   );
   return updatedRowCount;
 }
