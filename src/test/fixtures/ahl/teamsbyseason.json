@@ -1,0 +1,58 @@
+{
+ "SiteKit": {
+  "Parameters": {
+   "client_code": "ahl",
+   "fmt": "json",
+   "lang": "en",
+   "feed": "modulekit",
+   "view": "teamsbyseason",
+   "season_id": 94,
+   "lang_id": 1,
+   "league_id": "4"
+  },
+  "Teamsbyseason": [
+   {
+    "id": "440",
+    "name": "Abbotsford Canucks",
+    "city": "Abbotsford",
+    "code": "ABB",
+    "nickname": "Canucks",
+    "team_caption": "",
+    "division_id": "25",
+    "division_long_name": "Pacific Division",
+    "division_short_name": "Pacific",
+    "team_logo_url": "https://assets.leaguestat.com/ahl/logos/440.png"
+   },
+   {
+    "id": "402",
+    "name": "Bakersfield Condors",
+    "city": "Bakersfield",
+    "code": "BAK",
+    "nickname": "Condors",
+    "team_caption": "",
+    "division_id": "25",
+    "division_long_name": "Pacific Division",
+    "division_short_name": "Pacific",
+    "team_logo_url": "https://assets.leaguestat.com/ahl/logos/402_94.png"
+   },
+   {
+    "id": "413",
+    "name": "Belleville Senators",
+    "city": "Belleville",
+    "code": "BEL",
+    "nickname": "Senators",
+    "team_caption": "",
+    "division_id": "16",
+    "division_long_name": "North Division",
+    "division_short_name": "North",
+    "team_logo_url": "https://assets.leaguestat.com/ahl/logos/413.png"
+   }
+  ],
+  "Copyright": {
+   "required_copyright": "Official statistics provided by American Hockey League",
+   "required_link": "http://leaguestat.com",
+   "powered_by": "Powered by HockeyTech.com",
+   "powered_by_url": "http://hockeytech.com"
+  }
+ }
+}

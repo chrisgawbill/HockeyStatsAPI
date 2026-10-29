@@ -1,5 +1,6 @@
 const cache = require('#platform/cacheManager.js');
 const nhlApi = require('#platform/nhlApiClient.js');
+const ahlApi = require('#platform/ahlApiClient.js');
 const seasons = require('#platform/seasonHelper.js');
 const { runServiceTask } = require('#platform/runServiceTask.js');
 const { runAIPythonScript } = require('#platform/aiRunner.js');
@@ -41,6 +42,7 @@ const {
   createPushNotificationService,
 } = require('#slices/pushNotifications/pushNotificationService.js');
 const { createRivalryService } = require('#slices/rivalries/rivalryService.js');
+const { createAhlService } = require('#slices/ahl/ahlService.js');
 const {
   createRinkQuestProfileService,
 } = require('#slices/rinkQuestProfiles/rinkQuestProfileService.js');
@@ -51,15 +53,16 @@ const {
  * below this file reaches for a dependency it was not handed; routers receive
  * finished services and hold no domain logic of their own.
  *
- * Overrides exist for tests: pass a fake `cache` or `nhlApi` to build the whole
+ * Overrides exist for tests: pass a fake `cache`, `nhlApi` or `ahlApi` to build the whole
  * graph against stubs without touching module state.
  *
- * @param {Partial<{ cache: any, nhlApi: any, seasons: any, runServiceTask: any, runAIPythonScript: any }>} [overrides]
+ * @param {Partial<{ cache: any, nhlApi: any, ahlApi: any, seasons: any, runServiceTask: any, runAIPythonScript: any }>} [overrides]
  */
 function createContainer(overrides = {}) {
   const platform = {
     cache,
     nhlApi,
+    ahlApi,
     seasons,
     runServiceTask,
     runAIPythonScript,
@@ -106,6 +109,7 @@ function createContainer(overrides = {}) {
     ...platform,
     rosterService,
   });
+  const ahlService = createAhlService(platform);
 
   return {
     ...platform,
@@ -124,6 +128,7 @@ function createContainer(overrides = {}) {
     pushNotificationService,
     rivalryService,
     rinkQuestProfileService,
+    ahlService,
   };
 }
 

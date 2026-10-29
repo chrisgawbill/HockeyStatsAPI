@@ -1,0 +1,85 @@
+{
+ "SiteKit": {
+  "Parameters": {
+   "client_code": "ahl",
+   "fmt": "json",
+   "lang": "en",
+   "feed": "modulekit",
+   "view": "seasons",
+   "lang_id": 1,
+   "league_id": "4",
+   "season_id": "94"
+  },
+  "Seasons": [
+   {
+    "season_id": "94",
+    "season_name": "2026-27 Regular Season",
+    "shortname": "2026-27",
+    "career": "1",
+    "playoff": "0",
+    "start_date": "2026-10-01",
+    "end_date": "2027-04-11"
+   },
+   {
+    "season_id": "92",
+    "season_name": "2026 Calder Cup Playoffs",
+    "shortname": "26 Playoffs",
+    "career": "1",
+    "playoff": "1",
+    "start_date": "2026-04-20",
+    "end_date": "2026-06-20"
+   },
+   {
+    "season_id": "91",
+    "season_name": "2026 All-Star Challenge",
+    "shortname": "26 All-Star",
+    "career": "0",
+    "playoff": "0",
+    "start_date": "2026-02-10",
+    "end_date": "2026-02-12"
+   },
+   {
+    "season_id": "90",
+    "season_name": "2025-26 Regular Season",
+    "shortname": "2025-26",
+    "career": "1",
+    "playoff": "0",
+    "start_date": "2025-10-07",
+    "end_date": "2026-04-19"
+   },
+   {
+    "season_id": "72",
+    "season_name": "2021 Pacific Division Playoffs",
+    "shortname": "21 Playoffs",
+    "career": "1",
+    "playoff": "1",
+    "start_date": "2021-05-18",
+    "end_date": "2021-05-30"
+   },
+   {
+    "season_id": "58",
+    "season_name": "2017-18 Exhibition",
+    "shortname": "17-18 Ex",
+    "career": "0",
+    "playoff": "0",
+    "start_date": "2018-02-13",
+    "end_date": "2018-09-29"
+   },
+   {
+    "season_id": "45",
+    "season_name": "2013-14 Exhibition",
+    "shortname": "13-14 Ex",
+    "career": "0",
+    "playoff": "0",
+    "start_date": "2014-02-15",
+    "end_date": "2014-02-15"
+   }
+  ],
+  "Copyright": {
+   "required_copyright": "Official statistics provided by American Hockey League",
+   "required_link": "http://leaguestat.com",
+   "powered_by": "Powered by HockeyTech.com",
+   "powered_by_url": "http://hockeytech.com"
+  }
+ }
+}
