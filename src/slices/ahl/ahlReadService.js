@@ -98,7 +98,47 @@ function createAhlReadService({ ahlService }) {
       );
   }
 
+  /** The season's feed team with this tri-code and its HockeyTech season id; 404 when the AHL has no such team. */
+  async function findTeam(triCode, seasonId) {
+    const { hockeytechSeasonId, teamsPayload } =
+      await getRegularSeason(seasonId);
+    const team = (teamsPayload?.Teamsbyseason ?? []).find(
+      (feedTeam) => feedTeam.code === triCode,
+    );
+    if (!team) throw createError(404, 'Unknown AHL team.');
+    return { team, hockeytechSeasonId };
+  }
+
   return {
+    findTeam,
+
+    /**
+     * Name, team, position and headshot of an AHL player, from the season's
+     * league-wide skater and goalie tables; 404 when the player is in neither.
+     * shortcut: a player without a game this season is not found; look up the
+     * feed's player profile if users miss call-ups.
+     */
+    async findPlayerProfile(playerId, seasonId) {
+      const [skaterTable, goalieTable] = await Promise.all([
+        getPlayerTable('skaters', undefined, seasonId),
+        getPlayerTable('goalies', undefined, seasonId),
+      ]);
+      const skater = mapAhlSkaterSummary(skaterTable).find(
+        (row) => row.playerId === playerId,
+      );
+      const goalie = mapAhlGoalieSummary(goalieTable).find(
+        (row) => row.goalieId === playerId,
+      );
+      const player = skater ?? goalie;
+      if (!player) throw createError(404, 'Player not found.');
+      return {
+        fullName: player.name,
+        teamTriCode: player.teamTriCodes[0] ?? null,
+        position: skater ? skater.position : 'G',
+        headshot: null,
+      };
+    },
+
     /** `{ standings, league }`; empty standings for a season the AHL does not have. */
     async getStandings(seasonId) {
       const { hockeytechSeasonId, teamsPayload } =
@@ -153,12 +193,7 @@ function createAhlReadService({ ahlService }) {
 
     /** RosterContract of one AHL tri-code; 404 when the AHL has no such team that season. */
     async getRoster(triCode, seasonId) {
-      const { hockeytechSeasonId, teamsPayload } =
-        await getRegularSeason(seasonId);
-      const team = (teamsPayload?.Teamsbyseason ?? []).find(
-        (feedTeam) => feedTeam.code === triCode,
-      );
-      if (!team) throw createError(404, 'Unknown AHL team.');
+      const { team, hockeytechSeasonId } = await findTeam(triCode, seasonId);
       return tagLeague(
         mapAhlRosterContract(
           await ahlService.getRoster(hockeytechSeasonId, team.id),

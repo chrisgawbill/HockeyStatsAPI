@@ -41,6 +41,7 @@ function requireWeekStart(weekStart) {
 /** Maps a favorite_players row (joined with the player) to the API shape. */
 function mapFavoriteRow(favoriteRow) {
   return {
+    league: favoriteRow.league,
     playerId: Number(favoriteRow.player_id),
     name: favoriteRow.full_name,
     teamTriCode: favoriteRow.team_tri_code ?? null,
@@ -129,6 +130,7 @@ function sortIds(ids) {
  *   cache: typeof import('#platform/cacheManager.js'),
  *   seasons: typeof import('#platform/seasonHelper.js'),
  *   scheduleService: ReturnType<typeof import('#slices/schedule/scheduleService.js').createScheduleService>,
+ *   ahlReadService: ReturnType<typeof import('#slices/ahl/ahlReadService.js').createAhlReadService>,
  * }} deps
  */
 function createWeeklyPlayerReportService({
@@ -137,15 +139,22 @@ function createWeeklyPlayerReportService({
   cache,
   seasons,
   scheduleService,
+  ahlReadService,
 }) {
   const { getOrFetchCached, CACHE_TYPES } = cache;
 
-  /** The user's favorite players, in the API shape. */
+  /** The user's favorite players in both leagues, in the API shape. */
   async function listFavorites(userId) {
     const favoriteRows = await withTransaction((client) =>
       repository.listFavoritePlayers(client, userId),
     );
     return favoriteRows.map(mapFavoriteRow);
+  }
+
+  /** The user's NHL favorite players: the only ones reports and pushes cover. */
+  async function listNhlFavorites(userId) {
+    const favorites = await listFavorites(userId);
+    return favorites.filter((favorite) => favorite.league === 'nhl');
   }
 
   /** Looks up a player's name, team, position and headshot on the NHL player landing. */
@@ -359,15 +368,26 @@ function createWeeklyPlayerReportService({
   return {
     MAX_FAVORITE_PLAYERS,
     listFavorites,
+    listNhlFavorites,
 
-    /** Favorites a player (409 past the cap) and returns the updated favorites. */
-    async addFavorite(userId, playerId) {
+    /**
+     * Favorites a player (409 past the cap shared by both leagues) and
+     * returns the updated favorites; 404 when the league has no such player.
+     */
+    async addFavorite(userId, playerId, league = 'nhl') {
       const parsedPlayerId = parsePlayerId(playerId);
-      const profile = await getPlayerProfile(parsedPlayerId);
+      const profile =
+        league === 'ahl'
+          ? await ahlReadService.findPlayerProfile(
+              parsedPlayerId,
+              seasons.getCurrentSeasonId(),
+            )
+          : await getPlayerProfile(parsedPlayerId);
       const added = await withTransaction((client) =>
         repository.insertFavoritePlayer(client, {
           userId,
           playerId: parsedPlayerId,
+          league,
           ...profile,
           limit: MAX_FAVORITE_PLAYERS,
         }),
@@ -382,13 +402,14 @@ function createWeeklyPlayerReportService({
     },
 
     /** Sets a favorite player's tier and/or label and returns the updated favorites; 404 when not a favorite. */
-    async updateCategory(userId, playerId, body) {
+    async updateCategory(userId, playerId, body, league = 'nhl') {
       const parsedPlayerId = parsePlayerId(playerId);
       const categoryChanges = parseCategoryUpdate(body);
       const updatedRowCount = await withTransaction((client) =>
         repository.updateFavoritePlayerCategory(client, {
           userId,
           playerId: parsedPlayerId,
+          league,
           ...categoryChanges,
         }),
       );
@@ -397,7 +418,7 @@ function createWeeklyPlayerReportService({
     },
 
     /** Includes or leaves out a favorite player in the weekly-report push; 404 when not a favorite. */
-    async setPushMuted(userId, playerId, muted) {
+    async setPushMuted(userId, playerId, muted, league = 'nhl') {
       const parsedPlayerId = parsePlayerId(playerId);
       if (typeof muted !== 'boolean') {
         throw createError(400, 'muted must be a boolean.');
@@ -406,6 +427,7 @@ function createWeeklyPlayerReportService({
         repository.updateFavoritePlayerPushMuted(client, {
           userId,
           playerId: parsedPlayerId,
+          league,
           muted,
         }),
       );
@@ -414,12 +436,13 @@ function createWeeklyPlayerReportService({
     },
 
     /** Removes a favorite player and returns the updated favorites. */
-    async removeFavorite(userId, playerId) {
+    async removeFavorite(userId, playerId, league = 'nhl') {
       const parsedPlayerId = parsePlayerId(playerId);
       await withTransaction((client) =>
         repository.deleteFavoritePlayer(client, {
           userId,
           playerId: parsedPlayerId,
+          league,
         }),
       );
       return { favorites: await listFavorites(userId) };

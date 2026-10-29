@@ -41,14 +41,18 @@ After Action Reports are computed on request, not by a background job (the hoste
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/favorites` | `{ favorites: [{ triCode, since, pushMuted, tier, label }] }` |
-| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` (re-PUT keeps tier and label); 409 past 5 teams (accounts already over 5 keep theirs) |
+| `GET /api/favorites` | `{ favorites: [{ league, triCode, since, pushMuted, tier, label }] }`, both leagues |
+| `PUT /api/favorites/:triCode` / `DELETE /api/favorites/:triCode` | Add or remove a favorite; returns `{ favorites }` (re-PUT keeps tier and label); 404 unknown AHL team, 409 past 5 teams across both leagues (accounts already over 5 keep theirs) |
 | `PATCH /api/favorites/:triCode` | Body `{ tier?, label? }` (at least one); returns `{ favorites }`; 400 bad tier/label/empty body/bad code, 404 if not a favorite |
 | `GET /api/after-action-reports` | `{ reports, unreadCount }`, newest first, at most 25 |
 | `POST /api/after-action-reports/:gameId/read` | Mark one report read (204) |
 | `POST /api/after-action-reports/read-all` | Mark the whole inbox read |
 
-`GET /api/favorites` and the favorites routes also return `pushMuted: boolean` per favorite. Every favorite team and favorite player also carries a fan category (migration 006, display only: no effect on reports or push): `tier` is `diehard`, `fan` (default for new and existing favorites) or `curious`, and `label` is optional free text (emoji allowed) or `null`. `PATCH` trims the label, caps it at 24 user-perceived characters, and treats `null` or an empty string as clearing it. All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google` or `POST /api/auth/discord`. The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
+`GET /api/favorites` and the favorites routes also return `pushMuted: boolean` per favorite. Every favorite team and favorite player also carries a fan category (migration 006, display only: no effect on reports or push): `tier` is `diehard`, `fan` (default for new and existing favorites) or `curious`, and `label` is optional free text (emoji allowed) or `null`. `PATCH` trims the label, caps it at 24 user-perceived characters, and treats `null` or an empty string as clearing it. All of these require `Authorization: Bearer <session token>` from `POST /api/auth/google` or `POST /api/auth/discord`.
+
+AHL and NHL favorites share one list each (migration 015 adds `league`, `nhl` for existing rows, to `favorite_teams` and `favorite_players` and to their keys, since AHL tri-codes and player ids can match NHL ones). Every favorite team and player route with a tri-code or player id, `/push-mute` included, takes `?league=nhl|ahl` (default `nhl`; anything else is a 400), so the same code or id can be favorited once per league. The 5-team and 10-player limits count both leagues together. AHL team codes are 2-4 letters (Coachella Valley is `CV`) and must be an AHL team this season; an AHL player must appear in this season's AHL skater or goalie table (so one without a game yet is a 404), and AHL favorites have no headshot. After Action Reports, game pushes and the Weekly Player Report read only NHL favorites; AHL favorites are listed but produce no reports or pushes.
+
+The frontend should consume these routes through its configured `VITE_API_URL`; this repository does not contain frontend or design-library code.
 
 `GET /team/lines/:triCode?season=` returns forward lines, defense pairs and the starting goalie derived from the team's most recent completed game's NHL shift chart (`source: "shifts"`, or `source: "none"` with empty arrays when there is no completed game or the chart is unavailable). Every response is built from a single `gameId`. To keep the NHL call budget low it reuses the existing schedule caches (10-minute current-week cache, 12-hour season cache) and the roster cache, and fetches one shift chart per game from `api.nhle.com` plus one play-by-play per game from `api-web.nhle.com` (about 2 NHL calls per game; faceoffs taken pick each line's center, falling back to roster positions if the play-by-play is unavailable, and only the faceoff plays are cached): official (`OFF`) charts and faceoff data are cached permanently and shared by both teams, while `FINAL`-but-not-official games use a 5-minute cache. Empty charts are never cached permanently, and only raw NHL payloads are cached (lines are computed on read).
 
@@ -126,8 +130,8 @@ Migration 005 adds `favorite_players` (at most 10 per user), the frozen `weekly_
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `GET /api/favorite-players` | session | `{ favorites: [{ playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }` |
-| `PUT /api/favorite-players/:playerId` / `DELETE ...` | session | Add (validated against the NHL player landing, 24-hour cache) or remove; returns `{ favorites }`; 400 bad id, 404 unknown player, 409 past 10; re-PUT keeps tier and label |
+| `GET /api/favorite-players` | session | `{ favorites: [{ league, playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }`, both leagues |
+| `PUT /api/favorite-players/:playerId` / `DELETE ...` | session | Add (validated against the NHL player landing, 24-hour cache, or for the AHL the season's skater and goalie tables) or remove; returns `{ favorites }`; 400 bad id, 404 unknown player, 409 past 10 across both leagues; re-PUT keeps tier and label |
 | `PATCH /api/favorite-players/:playerId` | session | Body `{ tier?, label? }` (at least one); returns `{ favorites }`; 400 bad tier/label/empty body/bad id, 404 if not a favorite |
 | `PUT /api/favorite-players/:playerId/push-mute` | session | Body `{ muted: boolean }`; whether the player counts in the weekly push (migration 010, default included); returns `{ favorites }`; 400 bad body/id, 404 if not a favorite |
 | `GET /api/weekly-player-reports` | session | `{ reports, unreadCount }`, newest first, at most 12 |

@@ -1,9 +1,11 @@
 const express = require('express');
 const { requireAuth } = require('#presentation/middleware/requireAuth.js');
+const { validateLeague } = require('#presentation/middleware/validateLeague.js');
 
 /**
- * Favorite players, behind requireAuth:
- *   GET    /api/favorite-players            -> { favorites: [{ playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }
+ * Favorite players of both leagues, behind requireAuth. The routes with a
+ * player id take `?league=nhl|ahl` (default nhl):
+ *   GET    /api/favorite-players            -> { favorites: [{ league, playerId, name, teamTriCode, position, headshot, since, tier, label, pushMuted }] }
  *   PATCH  /api/favorite-players/:playerId  body { tier?, label? } -> { favorites }
  *   PUT    /api/favorite-players/:playerId  -> { favorites } (409 past the cap)
  *   PUT    /api/favorite-players/:playerId/push-mute  body { muted } -> { favorites }
@@ -11,7 +13,7 @@ const { requireAuth } = require('#presentation/middleware/requireAuth.js');
  */
 function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
   const router = express.Router();
-  router.use(requireAuth);
+  router.use(requireAuth, validateLeague);
 
   router.get('/', async (req, res, next) => {
     try {
@@ -29,6 +31,7 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
         await weeklyPlayerReportService.addFavorite(
           req.userId,
           req.params.playerId,
+          req.league,
         ),
       );
     } catch (error) {
@@ -43,6 +46,7 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
           req.userId,
           req.params.playerId,
           req.body,
+          req.league,
         ),
       );
     } catch (error) {
@@ -57,6 +61,7 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
           req.userId,
           req.params.playerId,
           (req.body || {}).muted,
+          req.league,
         ),
       );
     } catch (error) {
@@ -70,6 +75,7 @@ function createFavoritePlayersRouter({ weeklyPlayerReportService }) {
         await weeklyPlayerReportService.removeFavorite(
           req.userId,
           req.params.playerId,
+          req.league,
         ),
       );
     } catch (error) {

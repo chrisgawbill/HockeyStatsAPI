@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const createError = require('http-errors');
 const { beforeEach, test } = require('node:test');
 const jwt = require('jsonwebtoken');
 
@@ -146,7 +147,7 @@ function fakeStore() {
           rows: [
             {
               is_already_favorite: userFavorites.some(
-                (favorite) => favorite.team_tri_code === params[1],
+                (favorite) => favorite.team_tri_code === params[1] && favorite.league === params[2],
               ),
               favorite_count: userFavorites.length,
             },
@@ -156,12 +157,16 @@ function fakeStore() {
       if (sql.includes('INSERT INTO favorite_teams')) {
         if (
           !favorites.some(
-            (favorite) => favorite.user_id === params[0] && favorite.team_tri_code === params[1],
+            (favorite) =>
+              favorite.user_id === params[0] &&
+              favorite.team_tri_code === params[1] &&
+              favorite.league === params[2],
           )
         ) {
           favorites.push({
             user_id: params[0],
             team_tri_code: params[1],
+            league: params[2],
             created_at: '2026-10-10T12:00:00.000Z',
             tier: 'fan',
             label: null,
@@ -171,7 +176,10 @@ function fakeStore() {
       }
       if (sql.includes('DELETE FROM favorite_teams')) {
         const index = favorites.findIndex(
-          (favorite) => favorite.user_id === params[0] && favorite.team_tri_code === params[1],
+          (favorite) =>
+            favorite.user_id === params[0] &&
+            favorite.team_tri_code === params[1] &&
+            favorite.league === params[2],
         );
         if (index >= 0) favorites.splice(index, 1);
         return { rows: [] };
@@ -203,11 +211,20 @@ function fakeStore() {
   return { withTransaction: (fn) => fn(client), favorites, reads };
 }
 
+/** AHL teams the fake AHL read service knows; TOR doubles as an NHL code. */
+const AHL_TEAM_CODES = new Set(['TOR', 'BEL', 'ABB']);
+
 function buildService({ scheduleService } = {}) {
   const store = fakeStore();
   const service = createAfterActionReportService({
     withTransaction: store.withTransaction,
     seasons: { getCurrentSeasonId: () => '20262027' },
+    ahlReadService: {
+      async findTeam(triCode) {
+        if (!AHL_TEAM_CODES.has(triCode)) throw createError(404, 'Unknown AHL team.');
+        return {};
+      },
+    },
     scheduleService: scheduleService ?? {
       getTeamSchedule: async () => ({
         games: [game({ gameId: 11, date: '2026-10-12' })],
@@ -510,6 +527,7 @@ test('PATCH /api/favorites/:triCode requires a session and returns the full list
   assert.equal(ok.status, 200);
   assert.deepEqual(Object.keys(ok.body), ['favorites']);
   assert.deepEqual(ok.body.favorites[0], {
+    league: 'nhl',
     triCode: 'TOR',
     since: '2026-10-10T12:00:00.000Z',
     pushMuted: false,
@@ -526,4 +544,42 @@ test('PATCH /api/favorites/:triCode requires a session and returns the full list
     400,
   );
   assert.equal((await patch('/api/favorites/MTL', { tier: 'fan' })).status, 404);
+});
+
+test('API-AHL-03 Verify: favorite teams share the cap of 5 across leagues, key on league, and only NHL ones report', async () => {
+  const scheduledTeams = [];
+  const { service } = buildService({
+    scheduleService: {
+      getTeamSchedule: async (triCode) => {
+        scheduledTeams.push(triCode);
+        return { games: [game({ gameId: 11 })] };
+      },
+      getRecentTeamGames: async () => ({ games: [] }),
+    },
+  });
+
+  await assert.rejects(service.addFavorite(7, 'XYZ', 'ahl'), { status: 404 });
+  await assert.rejects(service.addFavorite(7, 'TORONTO', 'ahl'), { status: 400 });
+  for (const triCode of ['TOR', 'MTL', 'BOS']) await service.addFavorite(7, triCode);
+  await service.addFavorite(7, 'tor', 'ahl');
+  const { favorites } = await service.addFavorite(7, 'BEL', 'ahl');
+  assert.deepEqual(
+    favorites.map((favorite) => `${favorite.league}:${favorite.triCode}`),
+    ['nhl:TOR', 'nhl:MTL', 'nhl:BOS', 'ahl:TOR', 'ahl:BEL'],
+  );
+
+  await assert.rejects(service.addFavorite(7, 'OTT'), { status: 409 });
+  await assert.rejects(service.addFavorite(7, 'ABB', 'ahl'), { status: 409 });
+  await service.addFavorite(7, 'TOR', 'ahl');
+
+  // Only NHL favorites load schedules and produce reports.
+  const { reports } = await service.listReports(7);
+  assert.deepEqual(scheduledTeams.sort(), ['BOS', 'MTL', 'TOR']);
+  assert.deepEqual(reports[0].favoriteTeams, ['TOR', 'MTL', 'BOS']);
+
+  const afterRemoval = await service.removeFavorite(7, 'TOR', 'ahl');
+  assert.deepEqual(
+    afterRemoval.favorites.map((favorite) => `${favorite.league}:${favorite.triCode}`),
+    ['nhl:TOR', 'nhl:MTL', 'nhl:BOS', 'ahl:BEL'],
+  );
 });

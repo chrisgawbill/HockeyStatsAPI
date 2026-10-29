@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const createError = require('http-errors');
 const { beforeEach, test } = require('node:test');
 
 const { makeTestApp, jsonRequest: request } = require('./testApp.js');
@@ -202,10 +203,12 @@ function fakeDb() {
     async query(sql, params = []) {
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('INSERT INTO favorite_players')) {
-        const [user_id, player_id, full_name, team, position, headshot, limit] =
+        const [user_id, player_id, full_name, team, position, headshot, limit, league] =
           params;
         const mine = db.favorites.filter((favorite) => favorite.user_id === user_id);
-        const existing = mine.find((favorite) => favorite.player_id === String(player_id));
+        const existing = mine.find(
+          (favorite) => favorite.player_id === String(player_id) && favorite.league === league,
+        );
         if (existing) {
           Object.assign(existing, { full_name, team_tri_code: team });
           return { rows: [], rowCount: 1 };
@@ -215,6 +218,7 @@ function fakeDb() {
         db.favorites.push({
           user_id,
           player_id: String(player_id),
+          league,
           full_name,
           team_tri_code: team,
           position,
@@ -247,12 +251,19 @@ function fakeDb() {
       if (sql.includes('DELETE FROM favorite_players')) {
         db.favorites = db.favorites.filter(
           (favorite) =>
-            !(favorite.user_id === params[0] && favorite.player_id === String(params[1])),
+            !(
+              favorite.user_id === params[0] &&
+              favorite.player_id === String(params[1]) &&
+              favorite.league === params[2]
+            ),
         );
         return { rows: [] };
       }
       if (sql.includes('FROM favorite_teams')) {
-        return { rows: [...db.favoriteTeams] };
+        return { rows: db.favoriteTeams.filter((favorite) => favorite.league === 'nhl') };
+      }
+      if (sql.includes("FROM favorite_players\n\t\tWHERE league = 'nhl'")) {
+        return { rows: db.favorites.filter((favorite) => favorite.league === 'nhl') };
       }
       if (sql.includes('FROM favorite_players') && sql.includes('WHERE')) {
         return {
@@ -420,6 +431,18 @@ function fakeScheduleService(calls, fail, staleTeams) {
   };
 }
 
+/** AHL players the fake AHL read service knows; MCDAVID's id doubles as an AHL id. */
+const AHL_PLAYER_IDS = new Set([MCDAVID, 777]);
+
+function fakeAhlReadService() {
+  return {
+    async findPlayerProfile(playerId) {
+      if (!AHL_PLAYER_IDS.has(playerId)) throw createError(404, 'Player not found.');
+      return { fullName: `AHL ${playerId}`, teamTriCode: 'BEL', position: 'C', headshot: null };
+    },
+  };
+}
+
 function build({ schedule = NORMAL_WEEK, sendImpl, staleTeams = [] } = {}) {
   const db = fakeDb();
   const cache = fakeCache();
@@ -475,6 +498,7 @@ function build({ schedule = NORMAL_WEEK, sendImpl, staleTeams = [] } = {}) {
       fail,
       new Set(staleTeams),
     ),
+    ahlReadService: fakeAhlReadService(),
   });
   const sent = [];
   const webPush = {
@@ -729,8 +753,8 @@ function favoriteTeamOf(triCode, tier = 'fan', label = null) {
 }
 
 /** A favorite_teams row in the fake database. */
-function favoriteTeamRow(userId, triCode, tier = 'fan', label = null) {
-  return { user_id: userId, team_tri_code: triCode, tier, label };
+function favoriteTeamRow(userId, triCode, tier = 'fan', label = null, league = 'nhl') {
+  return { user_id: userId, team_tri_code: triCode, league, tier, label };
 }
 
 const EDM_WEEK_GAMES = [
@@ -964,6 +988,7 @@ test('favorite players: add, list, remove, validation, auth, and the cap of 10',
   assert.equal(added.status, 200);
   assert.deepEqual(added.body.favorites, [
     {
+      league: 'nhl',
       playerId: MCDAVID,
       name: 'Connor McDavid',
       teamTriCode: 'EDM',
@@ -1521,4 +1546,71 @@ test('API-WPR-02: with every player muted, the weekly push carries the team line
     ({ subscription }) => subscription.endpoint === 'https://push.example.com/7',
   );
   assert.equal(userSevenPush.payload.body, 'Teams: EDM 1-0-1.');
+});
+
+// --- Both leagues (API-AHL-03) ----------------------------------------------
+
+test('API-AHL-03 Verify: favorite players share the cap of 10 across leagues and key on league', async () => {
+  const ctx = build();
+  const favoriteAhl = (playerId) =>
+    request(ctx.favorites, `/api/favorite-players/${playerId}?league=ahl`, {
+      method: 'PUT',
+      headers: auth(7),
+    });
+
+  assert.equal((await favoriteAhl(1234)).status, 404);
+  assert.equal(
+    (await request(ctx.favorites, '/api/favorite-players/777?league=xhl', { method: 'PUT', headers: auth(7) })).status,
+    400,
+  );
+  for (let id = 1; id <= 7; id += 1) {
+    assert.equal((await favorite(ctx, 7, 9000000 + id)).status, 200);
+  }
+  // The same id is a separate favorite in each league.
+  assert.equal((await favorite(ctx, 7, MCDAVID)).status, 200);
+  assert.equal((await favoriteAhl(MCDAVID)).status, 200);
+  const tenth = await favoriteAhl(777);
+  assert.equal(tenth.status, 200);
+  assert.deepEqual(
+    tenth.body.favorites.filter((favorite) => favorite.playerId === MCDAVID).map((favorite) => favorite.league),
+    ['nhl', 'ahl'],
+  );
+
+  assert.equal((await favorite(ctx, 7, 9000011)).status, 409);
+  assert.equal((await favoriteAhl(MCDAVID)).status, 200);
+  await request(ctx.favorites, '/api/favorite-players/777?league=ahl', {
+    method: 'DELETE',
+    headers: auth(7),
+  });
+  assert.equal((await favorite(ctx, 7, 9000011)).status, 200);
+  assert.equal((await favoriteAhl(777)).status, 409);
+
+  const removed = await request(ctx.favorites, `/api/favorite-players/${MCDAVID}?league=ahl`, {
+    method: 'DELETE',
+    headers: auth(7),
+  });
+  assert.deepEqual(
+    removed.body.favorites.filter((favorite) => favorite.playerId === MCDAVID).map((favorite) => favorite.league),
+    ['nhl'],
+  );
+});
+
+test('API-AHL-03 Verify: the weekly report and its push ignore AHL favorites', async () => {
+  const ctx = build();
+  await seedUsers(ctx);
+  // User 10 favorites only AHL players, including one that shares an NHL id.
+  for (const playerId of [777, MCDAVID]) {
+    const added = await request(ctx.favorites, `/api/favorite-players/${playerId}?league=ahl`, {
+      method: 'PUT',
+      headers: auth(10),
+    });
+    assert.equal(added.status, 200);
+  }
+  ctx.db.subscribe(10);
+
+  const response = await weeklyDispatch(ctx);
+  assert.equal(response.status, 200);
+  assert.deepEqual([...ctx.db.reports.keys()].sort(), [`7:${WEEK}`, `9:${WEEK}`]);
+  assert.doesNotMatch(decodeURIComponent(ctx.calls.skaters[0]), /777/);
+  assert.equal(ctx.sent.length, 1);
 });

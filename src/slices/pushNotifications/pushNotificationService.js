@@ -341,7 +341,7 @@ function createPushNotificationService({
   /** The report's players the user still counts in the weekly push (not muted). */
   async function listWeeklyPushPlayers(userId, report) {
     const favoritePlayers =
-      await weeklyPlayerReportService.listFavorites(userId);
+      await weeklyPlayerReportService.listNhlFavorites(userId);
     const mutedPlayerIds = new Set(
       favoritePlayers
         .filter((favoritePlayer) => favoritePlayer.pushMuted)
@@ -403,7 +403,7 @@ function createPushNotificationService({
     const favoritesByUser = new Map();
     const triCodes = new Set();
     for (const userId of userIds) {
-      const favorites = await afterActionReportService.listFavorites(userId);
+      const favorites = await afterActionReportService.listNhlFavorites(userId);
       favoritesByUser.set(userId, favorites);
       for (const { triCode } of favorites) triCodes.add(triCode);
     }
@@ -464,7 +464,7 @@ function createPushNotificationService({
     );
 
     const favoritePlayers =
-      await weeklyPlayerReportService.listFavorites(userId);
+      await weeklyPlayerReportService.listNhlFavorites(userId);
     for (const report of freshReports) {
       if (alreadySentGameIds.has(report.gameId)) continue;
       // Claim before sending so concurrent dispatches cannot double send.

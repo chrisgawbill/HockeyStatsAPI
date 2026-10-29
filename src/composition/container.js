@@ -91,13 +91,17 @@ function createContainer(overrides = {}) {
   const aiSummaryService = createAiSummaryService(platform);
   const authService = createAuthService(platform);
   const boardGameStreakService = createBoardGameStreakService(platform);
+  const ahlService = createAhlService(platform);
+  const ahlReadService = createAhlReadService({ ahlService });
   const afterActionReportService = createAfterActionReportService({
     ...platform,
     scheduleService,
+    ahlReadService,
   });
   const weeklyPlayerReportService = createWeeklyPlayerReportService({
     ...platform,
     scheduleService,
+    ahlReadService,
   });
   const pushNotificationService = createPushNotificationService({
     ...platform,
@@ -110,8 +114,6 @@ function createContainer(overrides = {}) {
     ...platform,
     rosterService,
   });
-  const ahlService = createAhlService(platform);
-  const ahlReadService = createAhlReadService({ ahlService });
 
   return {
     ...platform,

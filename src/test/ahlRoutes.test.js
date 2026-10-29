@@ -399,3 +399,25 @@ test('stat leaders for league=ahl: top 10, rate boards qualified, unknown catego
     [2],
   );
 });
+
+test('API-AHL-03: favorites look up AHL teams by tri-code and players in the season stat tables', async () => {
+  const { ahlReadService } = makeAhlReadService();
+
+  const { team } = await ahlReadService.findTeam('TOR', '20262027');
+  assert.equal(team.name, 'Toronto Marlies');
+  await assert.rejects(ahlReadService.findTeam('XYZ', '20262027'), { status: 404 });
+
+  assert.deepEqual(await ahlReadService.findPlayerProfile(10978, '20262027'), {
+    fullName: 'Luke Mittelstadt',
+    teamTriCode: 'LAV',
+    position: 'D',
+    headshot: null,
+  });
+  assert.deepEqual(await ahlReadService.findPlayerProfile(2519, '20262027'), {
+    fullName: 'James Reimer',
+    teamTriCode: 'HFD',
+    position: 'G',
+    headshot: null,
+  });
+  await assert.rejects(ahlReadService.findPlayerProfile(1, '20262027'), { status: 404 });
+});

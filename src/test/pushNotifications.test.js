@@ -98,6 +98,7 @@ function fakeDb() {
           db.favorites.push({
             user_id: params[0],
             team_tri_code: params[1],
+            league: params[2],
             created_at: '2026-10-01T00:00:00.000Z',
             push_muted: false,
           });
@@ -260,6 +261,7 @@ function build({
     withTransaction: db.withTransaction,
     seasons: { getCurrentSeasonId: () => '20262027' },
     scheduleService,
+    ahlReadService: { findTeam: async () => ({}) },
   });
   const sent = [];
   const webPush = {
@@ -272,7 +274,7 @@ function build({
     withTransaction: db.withTransaction,
     sessionJwt,
     afterActionReportService,
-    weeklyPlayerReportService: { listFavorites: async () => favoritePlayers },
+    weeklyPlayerReportService: { listNhlFavorites: async () => favoritePlayers },
     scheduleService,
     webPush,
     ...(notifier ? { notifier } : {}),
@@ -896,4 +898,19 @@ test('account switch: get, set, validate; off skips dispatch; back on does not p
   ctx.db.ledger.clear();
   await put(json({ enabled: true }));
   assert.equal(ctx.db.ledger.size, 0);
+});
+
+test('API-AHL-03 Verify: dispatch ignores AHL favorite teams, even one sharing an NHL tri-code', async () => {
+  const ctx = build({ games: [game({ gameId: 9, homeTeam: 'TOR', awayTeam: 'MTL' })] });
+  await ctx.afterActionReportService.addFavorite(7, 'TOR', 'ahl');
+  await setupUser(ctx, 7, [], [ENDPOINT]);
+  await setupUser(ctx, 8, ['MTL'], ['https://push.example.com/send/u8']);
+
+  const dispatchSummary = await dispatch(ctx);
+  assert.deepEqual(dispatchSummary, { users: 2, sent: 1, removed: 0 });
+  assert.deepEqual(ctx.scheduleCalls.recent, ['MTL']);
+  assert.deepEqual(
+    ctx.sent.map((sent) => sent.subscription.endpoint),
+    ['https://push.example.com/send/u8'],
+  );
 });

@@ -5,7 +5,7 @@ const {
 } = require('#platform/favoriteCategory.js');
 const repository = require('#slices/afterActionReports/afterActionReportRepository.js');
 
-const TRI_CODE_PATTERN = /^[A-Z]{3}$/;
+const TRI_CODE_PATTERNS = { nhl: /^[A-Z]{3}$/, ahl: /^[A-Z]{2,4}$/ };
 const COMPLETED_GAME_STATES = new Set(['OFF', 'FINAL']);
 const MAX_REPORTS = 25;
 const MAX_FAVORITE_TEAMS = 5;
@@ -104,10 +104,10 @@ function mergeTeamGames(seasonGames, recentGames) {
   return [...gamesById.values()];
 }
 
-/** Upper-cases and validates a team tri-code from user input; throws 400 if malformed. */
-function parseTriCode(triCode) {
+/** Upper-cases and validates a team tri-code of `league` from user input; throws 400 if malformed. */
+function parseTriCode(triCode, league = 'nhl') {
   const upperCaseTriCode = String(triCode ?? '').toUpperCase();
-  if (!TRI_CODE_PATTERN.test(upperCaseTriCode)) {
+  if (!TRI_CODE_PATTERNS[league].test(upperCaseTriCode)) {
     throw createError(400, 'Invalid team tri-code.');
   }
   return upperCaseTriCode;
@@ -125,6 +125,7 @@ function parseGameId(gameId) {
 /** Maps a favorite_teams row to the API shape. */
 function mapFavoriteRow(favoriteRow) {
   return {
+    league: favoriteRow.league,
     triCode: favoriteRow.team_tri_code,
     since: new Date(favoriteRow.created_at).toISOString(),
     pushMuted: Boolean(favoriteRow.push_muted),
@@ -143,19 +144,27 @@ function mapFavoriteRow(favoriteRow) {
  *   withTransaction: typeof import('#platform/pool.js').withTransaction,
  *   seasons: typeof import('#platform/seasonHelper.js'),
  *   scheduleService: ReturnType<typeof import('#slices/schedule/scheduleService.js').createScheduleService>,
+ *   ahlReadService: ReturnType<typeof import('#slices/ahl/ahlReadService.js').createAhlReadService>,
  * }} deps
  */
 function createAfterActionReportService({
   withTransaction,
   seasons,
   scheduleService,
+  ahlReadService,
 }) {
-  /** The user's favorite teams, in the API shape. */
+  /** The user's favorite teams in both leagues, in the API shape. */
   async function listFavorites(userId) {
     const favoriteRows = await withTransaction((client) =>
       repository.listFavoriteTeams(client, userId),
     );
     return favoriteRows.map(mapFavoriteRow);
+  }
+
+  /** The user's NHL favorite teams: the only ones reports and pushes cover. */
+  async function listNhlFavorites(userId) {
+    const favorites = await listFavorites(userId);
+    return favorites.filter((favorite) => favorite.league === 'nhl');
   }
 
   /**
@@ -203,7 +212,7 @@ function createAfterActionReportService({
    *   Lets push dispatch share one schedule load across users.
    */
   async function listReports(userId, preloaded = {}) {
-    const favorites = preloaded.favorites ?? (await listFavorites(userId));
+    const favorites = preloaded.favorites ?? (await listNhlFavorites(userId));
     if (favorites.length === 0) {
       return { reports: [], unreadCount: 0 };
     }
@@ -227,11 +236,12 @@ function createAfterActionReportService({
 
   return {
     listFavorites,
+    listNhlFavorites,
     loadGamesByTeam,
 
     /** Mutes or unmutes pushes for a favorite team; 404 if the team is not a favorite. */
-    async setPushMuted(userId, triCode, muted) {
-      const validTriCode = parseTriCode(triCode);
+    async setPushMuted(userId, triCode, muted, league = 'nhl') {
+      const validTriCode = parseTriCode(triCode, league);
       if (typeof muted !== 'boolean') {
         throw createError(400, 'muted must be a boolean.');
       }
@@ -239,6 +249,7 @@ function createAfterActionReportService({
         repository.updateFavoritePushMuted(client, {
           userId,
           triCode: validTriCode,
+          league,
           muted,
         }),
       );
@@ -247,13 +258,14 @@ function createAfterActionReportService({
     },
 
     /** Sets a favorite team's tier and/or label and returns the updated favorites; 404 when not a favorite. */
-    async updateCategory(userId, triCode, body) {
-      const validTriCode = parseTriCode(triCode);
+    async updateCategory(userId, triCode, body, league = 'nhl') {
+      const validTriCode = parseTriCode(triCode, league);
       const categoryChanges = parseCategoryUpdate(body);
       const updatedRowCount = await withTransaction((client) =>
         repository.updateFavoriteTeamCategory(client, {
           userId,
           triCode: validTriCode,
+          league,
           ...categoryChanges,
         }),
       );
@@ -261,13 +273,23 @@ function createAfterActionReportService({
       return { favorites: await listFavorites(userId) };
     },
 
-    /** Favorites a team (409 past the cap) and returns the updated favorites. */
-    async addFavorite(userId, triCode) {
-      const validTriCode = parseTriCode(triCode);
+    /**
+     * Favorites a team (409 past the cap shared by both leagues) and returns
+     * the updated favorites. AHL teams must exist this season (404 otherwise).
+     */
+    async addFavorite(userId, triCode, league = 'nhl') {
+      const validTriCode = parseTriCode(triCode, league);
+      if (league === 'ahl') {
+        await ahlReadService.findTeam(
+          validTriCode,
+          seasons.getCurrentSeasonId(),
+        );
+      }
       const added = await withTransaction((client) =>
         repository.insertFavoriteTeam(client, {
           userId,
           triCode: validTriCode,
+          league,
           limit: MAX_FAVORITE_TEAMS,
         }),
       );
@@ -281,10 +303,14 @@ function createAfterActionReportService({
     },
 
     /** Removes a favorite team and returns the updated favorites. */
-    async removeFavorite(userId, triCode) {
-      const validTriCode = parseTriCode(triCode);
+    async removeFavorite(userId, triCode, league = 'nhl') {
+      const validTriCode = parseTriCode(triCode, league);
       await withTransaction((client) =>
-        repository.deleteFavoriteTeam(client, { userId, triCode: validTriCode }),
+        repository.deleteFavoriteTeam(client, {
+          userId,
+          triCode: validTriCode,
+          league,
+        }),
       );
       return { favorites: await listFavorites(userId) };
     },
