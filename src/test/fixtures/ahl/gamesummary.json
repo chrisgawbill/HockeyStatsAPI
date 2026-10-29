@@ -1,0 +1,523 @@
+{
+  "details": {
+    "id": 1029073,
+    "venue": "Rocket Arena",
+    "started": "1",
+    "final": "1",
+    "status": "Final",
+    "seasonId": "94",
+    "GameDateISO8601": "2026-10-02T19:00:00-04:00"
+  },
+  "hasShootout": false,
+  "homeTeam": {
+    "info": {
+      "id": 373,
+      "name": "Cleveland Monsters",
+      "city": "Cleveland",
+      "nickname": "Monsters",
+      "abbreviation": "CLE",
+      "logo": "https://assets.leaguestat.com/ahl/logos/373_94.png",
+      "divisionName": "North Division"
+    },
+    "stats": {
+      "shots": 20,
+      "goals": 2,
+      "hits": 0,
+      "powerPlayGoals": 0,
+      "powerPlayOpportunities": 5,
+      "goalCount": 2,
+      "assistCount": 4,
+      "penaltyMinuteCount": 19,
+      "infractionCount": 8,
+      "faceoffAttempts": 0,
+      "faceoffWins": 0,
+      "faceoffWinPercentage": 0
+    },
+    "skaters": [
+      {
+        "info": {
+          "id": 9618,
+          "firstName": "Corson",
+          "lastName": "Ceulemans",
+          "jerseyNumber": 4,
+          "position": "D",
+          "birthDate": "2003-05-05",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/9618.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": -1,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "shots": 1,
+          "hits": 0,
+          "blockedShots": 0,
+          "toi": "0:00"
+        },
+        "starting": 1,
+        "status": ""
+      },
+      {
+        "info": {
+          "id": 9978,
+          "firstName": "James",
+          "lastName": "Malatesta",
+          "jerseyNumber": 11,
+          "position": "LW",
+          "birthDate": "2003-05-31",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/9978.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "shots": 2,
+          "hits": 0,
+          "blockedShots": 0,
+          "toi": "0:00"
+        },
+        "starting": 0,
+        "status": ""
+      },
+      {
+        "info": {
+          "id": 9058,
+          "firstName": "Owen",
+          "lastName": "Sillinger",
+          "jerseyNumber": 12,
+          "position": "C",
+          "birthDate": "1997-09-23",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/9058.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": -2,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "shots": 2,
+          "hits": 0,
+          "blockedShots": 0,
+          "toi": "0:00"
+        },
+        "starting": 1,
+        "status": "C"
+      }
+    ],
+    "goalies": [
+      {
+        "info": {
+          "id": 5658,
+          "firstName": "Pheonix",
+          "lastName": "Copley",
+          "jerseyNumber": 29,
+          "position": "G",
+          "birthDate": "1992-01-18",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/5658.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": "58:38",
+          "shotsAgainst": 25,
+          "goalsAgainst": 4,
+          "saves": 21
+        },
+        "starting": 1,
+        "status": ""
+      },
+      {
+        "info": {
+          "id": 10610,
+          "firstName": "Evan",
+          "lastName": "Gardner",
+          "jerseyNumber": 35,
+          "position": "G",
+          "birthDate": "2006-01-25",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/10610.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": null,
+          "shotsAgainst": 0,
+          "goalsAgainst": 0,
+          "saves": 0
+        },
+        "starting": 0,
+        "status": ""
+      }
+    ],
+    "goalieLog": [
+      {
+        "info": {
+          "id": 5658,
+          "firstName": "Pheonix",
+          "lastName": "Copley",
+          "jerseyNumber": 29,
+          "position": "G",
+          "birthDate": "",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/5658.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": "58:13",
+          "shotsAgainst": 25,
+          "goalsAgainst": 4,
+          "saves": 21
+        },
+        "periodStart": {
+          "id": "1",
+          "shortName": "1",
+          "longName": "1st"
+        },
+        "timeStart": "0:00",
+        "periodEnd": {
+          "id": "3",
+          "shortName": "3",
+          "longName": "3rd"
+        },
+        "timeEnd": "18:13",
+        "result": "L"
+      },
+      {
+        "info": {
+          "id": 5658,
+          "firstName": "Pheonix",
+          "lastName": "Copley",
+          "jerseyNumber": 29,
+          "position": "G",
+          "birthDate": "",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/5658.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": "00:25",
+          "shotsAgainst": 0,
+          "goalsAgainst": 0,
+          "saves": 0
+        },
+        "periodStart": {
+          "id": "3",
+          "shortName": "3",
+          "longName": "3rd"
+        },
+        "timeStart": "19:35",
+        "periodEnd": {
+          "id": "3",
+          "shortName": "3",
+          "longName": "3rd"
+        },
+        "timeEnd": "20:00",
+        "result": "L"
+      }
+    ]
+  },
+  "visitingTeam": {
+    "info": {
+      "id": 328,
+      "name": "Grand Rapids Griffins",
+      "city": "Grand Rapids",
+      "nickname": "Griffins",
+      "abbreviation": "GR",
+      "logo": "https://assets.leaguestat.com/ahl/logos/328_94.png",
+      "divisionName": "Central Division"
+    },
+    "stats": {
+      "shots": 26,
+      "goals": 5,
+      "hits": 0,
+      "powerPlayGoals": 1,
+      "powerPlayOpportunities": 6,
+      "goalCount": 5,
+      "assistCount": 7,
+      "penaltyMinuteCount": 17,
+      "infractionCount": 7,
+      "faceoffAttempts": 0,
+      "faceoffWins": 0,
+      "faceoffWinPercentage": 0
+    },
+    "skaters": [
+      {
+        "info": {
+          "id": 9571,
+          "firstName": "Ronnie",
+          "lastName": "Attard",
+          "jerseyNumber": 3,
+          "position": "D",
+          "birthDate": "1999-03-20",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/9571.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "shots": 1,
+          "hits": 0,
+          "blockedShots": 0,
+          "toi": "0:00"
+        },
+        "starting": 1,
+        "status": ""
+      },
+      {
+        "info": {
+          "id": 6856,
+          "firstName": "Sheldon",
+          "lastName": "Dries",
+          "jerseyNumber": 15,
+          "position": "C",
+          "birthDate": "1994-04-23",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/6856.jpg"
+        },
+        "stats": {
+          "goals": 2,
+          "assists": 0,
+          "points": 2,
+          "penaltyMinutes": 0,
+          "plusMinus": 1,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "shots": 3,
+          "hits": 0,
+          "blockedShots": 0,
+          "toi": "0:00"
+        },
+        "starting": 1,
+        "status": "A"
+      },
+      {
+        "info": {
+          "id": 10479,
+          "firstName": "Ondrej",
+          "lastName": "Becher",
+          "jerseyNumber": 25,
+          "position": "C",
+          "birthDate": "2004-02-22",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/10479.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 1,
+          "points": 1,
+          "penaltyMinutes": 0,
+          "plusMinus": 1,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "shots": 0,
+          "hits": 0,
+          "blockedShots": 0,
+          "toi": "0:00"
+        },
+        "starting": 0,
+        "status": ""
+      }
+    ],
+    "goalies": [
+      {
+        "info": {
+          "id": 11026,
+          "firstName": "Trey",
+          "lastName": "Augustine",
+          "jerseyNumber": 30,
+          "position": "G",
+          "birthDate": "2005-02-23",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/11026.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": null,
+          "shotsAgainst": 0,
+          "goalsAgainst": 0,
+          "saves": 0
+        },
+        "starting": 0,
+        "status": ""
+      },
+      {
+        "info": {
+          "id": 10748,
+          "firstName": "Michal",
+          "lastName": "Postava",
+          "jerseyNumber": 35,
+          "position": "G",
+          "birthDate": "2002-02-28",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/10748.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": "59:42",
+          "shotsAgainst": 20,
+          "goalsAgainst": 2,
+          "saves": 18
+        },
+        "starting": 1,
+        "status": ""
+      }
+    ],
+    "goalieLog": [
+      {
+        "info": {
+          "id": 10748,
+          "firstName": "Michal",
+          "lastName": "Postava",
+          "jerseyNumber": 35,
+          "position": "G",
+          "birthDate": "",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/10748.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": "30:48",
+          "shotsAgainst": 13,
+          "goalsAgainst": 2,
+          "saves": 11
+        },
+        "periodStart": {
+          "id": "1",
+          "shortName": "1",
+          "longName": "1st"
+        },
+        "timeStart": "0:00",
+        "periodEnd": {
+          "id": "2",
+          "shortName": "2",
+          "longName": "2nd"
+        },
+        "timeEnd": "10:48",
+        "result": "W"
+      },
+      {
+        "info": {
+          "id": 10748,
+          "firstName": "Michal",
+          "lastName": "Postava",
+          "jerseyNumber": 35,
+          "position": "G",
+          "birthDate": "",
+          "playerImageURL": "assets.leaguestat.com/ahl/120x160/10748.jpg"
+        },
+        "stats": {
+          "goals": 0,
+          "assists": 0,
+          "points": 0,
+          "penaltyMinutes": 0,
+          "plusMinus": 0,
+          "faceoffAttempts": 0,
+          "faceoffWins": 0,
+          "timeOnIce": "28:54",
+          "shotsAgainst": 7,
+          "goalsAgainst": 0,
+          "saves": 7
+        },
+        "periodStart": {
+          "id": "2",
+          "shortName": "2",
+          "longName": "2nd"
+        },
+        "timeStart": "11:06",
+        "periodEnd": {
+          "id": "3",
+          "shortName": "3",
+          "longName": "3rd"
+        },
+        "timeEnd": "20:00",
+        "result": "W"
+      }
+    ]
+  },
+  "periods": [
+    {
+      "info": {
+        "id": "1",
+        "shortName": "1",
+        "longName": "1st"
+      },
+      "stats": {
+        "homeGoals": "1",
+        "homeShots": "8",
+        "visitingGoals": "2",
+        "visitingShots": "7"
+      }
+    },
+    {
+      "info": {
+        "id": "2",
+        "shortName": "2",
+        "longName": "2nd"
+      },
+      "stats": {
+        "homeGoals": "1",
+        "homeShots": "8",
+        "visitingGoals": "1",
+        "visitingShots": "10"
+      }
+    },
+    {
+      "info": {
+        "id": "3",
+        "shortName": "3",
+        "longName": "3rd"
+      },
+      "stats": {
+        "homeGoals": "0",
+        "homeShots": "4",
+        "visitingGoals": "2",
+        "visitingShots": "9"
+      }
+    }
+  ]
+}

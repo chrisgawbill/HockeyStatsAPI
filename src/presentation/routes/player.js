@@ -2,6 +2,10 @@ const express = require('express');
 const {
   validateSeason,
 } = require('#presentation/middleware/validateSeason.js');
+const {
+  validateLeague,
+  nhlOnly,
+} = require('#presentation/middleware/validateLeague.js');
 
 /**
  * Player endpoints, all season-capable:
@@ -12,18 +16,29 @@ const {
  *   GET /player/skater/faceoffs?teamId=
  *   GET /player/goalie/summary?teamId=
  *   GET /player/stats/version   -> { version }, changes when stored stats do
+ * All but corsi and faceoffs also serve `league=ahl` (HockeyTech team ids).
  */
-function createPlayerRouter({ playerStatsService, statLeaderService }) {
+function createPlayerRouter({
+  playerStatsService,
+  statLeaderService,
+  ahlReadService,
+}) {
   const router = express.Router();
-  router.use(validateSeason);
+  router.use(validateSeason, validateLeague);
 
   router.get('/skater/statLeaders/:statIndicator', async (req, res, next) => {
     try {
       res.send(
-        await statLeaderService.getSkaterLeaders(
-          req.params.statIndicator,
-          req.seasonId,
-        ),
+        req.league === 'ahl'
+          ? await ahlReadService.getLeaders(
+              'skater',
+              req.params.statIndicator,
+              req.seasonId,
+            )
+          : await statLeaderService.getSkaterLeaders(
+              req.params.statIndicator,
+              req.seasonId,
+            ),
       );
     } catch (error) {
       next(error);
@@ -33,10 +48,16 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
   router.get('/goalie/statLeaders/:statIndicator', async (req, res, next) => {
     try {
       res.send(
-        await statLeaderService.getGoalieLeaders(
-          req.params.statIndicator,
-          req.seasonId,
-        ),
+        req.league === 'ahl'
+          ? await ahlReadService.getLeaders(
+              'goalie',
+              req.params.statIndicator,
+              req.seasonId,
+            )
+          : await statLeaderService.getGoalieLeaders(
+              req.params.statIndicator,
+              req.seasonId,
+            ),
       );
     } catch (error) {
       next(error);
@@ -45,18 +66,15 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
 
   router.get('/skater/summary', async (req, res, next) => {
     try {
-      res.send(
-        await playerStatsService.getSkaterSummary(
-          req.query.teamId,
-          req.seasonId,
-        ),
-      );
+      const service =
+        req.league === 'ahl' ? ahlReadService : playerStatsService;
+      res.send(await service.getSkaterSummary(req.query.teamId, req.seasonId));
     } catch (error) {
       next(error);
     }
   });
 
-  router.get('/skater/corsi', async (req, res, next) => {
+  router.get('/skater/corsi', nhlOnly, async (req, res, next) => {
     try {
       res.send(
         await playerStatsService.getSkaterCorsi(req.query.teamId, req.seasonId),
@@ -66,7 +84,7 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
     }
   });
 
-  router.get('/skater/faceoffs', async (req, res, next) => {
+  router.get('/skater/faceoffs', nhlOnly, async (req, res, next) => {
     try {
       res.send(
         await playerStatsService.getSkaterFaceoffs(
@@ -81,12 +99,9 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
 
   router.get('/goalie/summary', async (req, res, next) => {
     try {
-      res.send(
-        await playerStatsService.getGoalieSummary(
-          req.query.teamId,
-          req.seasonId,
-        ),
-      );
+      const service =
+        req.league === 'ahl' ? ahlReadService : playerStatsService;
+      res.send(await service.getGoalieSummary(req.query.teamId, req.seasonId));
     } catch (error) {
       next(error);
     }
@@ -95,7 +110,9 @@ function createPlayerRouter({ playerStatsService, statLeaderService }) {
   router.get('/stats/version', async (req, res, next) => {
     try {
       res.set('Cache-Control', 'no-store');
-      res.send(await playerStatsService.getStatsVersion());
+      const service =
+        req.league === 'ahl' ? ahlReadService : playerStatsService;
+      res.send(await service.getStatsVersion());
     } catch (error) {
       next(error);
     }

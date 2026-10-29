@@ -43,6 +43,7 @@ const {
 } = require('#slices/pushNotifications/pushNotificationService.js');
 const { createRivalryService } = require('#slices/rivalries/rivalryService.js');
 const { createAhlService } = require('#slices/ahl/ahlService.js');
+const { createAhlReadService } = require('#slices/ahl/ahlReadService.js');
 const {
   createRinkQuestProfileService,
 } = require('#slices/rinkQuestProfiles/rinkQuestProfileService.js');
@@ -110,6 +111,7 @@ function createContainer(overrides = {}) {
     rosterService,
   });
   const ahlService = createAhlService(platform);
+  const ahlReadService = createAhlReadService({ ahlService });
 
   return {
     ...platform,
@@ -129,6 +131,7 @@ function createContainer(overrides = {}) {
     rivalryService,
     rinkQuestProfileService,
     ahlService,
+    ahlReadService,
   };
 }
 

@@ -61,9 +61,28 @@ async function fetchStatview(view, params = {}) {
   return statTable;
 }
 
+/** Raw statviewfeed `gameSummary` of one game (the AHL website's boxscore), a single object. */
+async function fetchGameSummary(gameId) {
+  const response = await axiosAhl.get('', {
+    params: {
+      ...getFeedParams(),
+      feed: 'statviewfeed',
+      view: 'gameSummary',
+      game_id: gameId,
+    },
+    responseType: 'text',
+  });
+  const gameSummary = parseStatviewBody(response.data);
+  if (!gameSummary?.details) {
+    throw new Error(`AHL gameSummary ${gameId} returned no game.`);
+  }
+  return gameSummary;
+}
+
 module.exports = {
   isAhlFeedConfigured,
   parseStatviewBody,
   fetchModulekit,
   fetchStatview,
+  fetchGameSummary,
 };

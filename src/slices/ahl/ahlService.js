@@ -18,6 +18,9 @@ const LEAGUE_TEAM_ID = 0;
 // One page holds a whole season (about 1,250 skaters in 2025-26).
 const PLAYER_STATS_PAGE_SIZE = 5000;
 
+/** A final game never changes; anything else refetches its summary after this. */
+const GAME_SUMMARY_TTL_MS = 60 * 1000;
+
 /**
  * AHL slice service: fetches HockeyTech feed payloads through the shared cache
  * (keys prefixed `ahl:`, default lifetimes and stale-while-refresh) and stores
@@ -39,7 +42,7 @@ function createAhlService({
   runServiceTask,
   withTransaction,
 }) {
-  const { getOrFetchCached, writeCache, CACHE_TYPES } = cache;
+  const { getOrFetchCached, readCache, writeCache, CACHE_TYPES } = cache;
 
   /** Cache type, key and fetcher of each feed payload. */
   const feedEntries = {
@@ -91,13 +94,21 @@ function createAhlService({
       key: `ahl:goalies:${hockeytechSeasonId}`,
       fetch: () => fetchPlayerStats(hockeytechSeasonId, 'goalies'),
     }),
+    teamPlayerStats: (hockeytechSeasonId, position, teamId) => ({
+      type: CACHE_TYPES.PLAYER,
+      key: `ahl:${position}:${hockeytechSeasonId}:${teamId}`,
+      fetch: () => fetchPlayerStats(hockeytechSeasonId, position, teamId),
+    }),
   };
 
-  /** League-wide skater or goalie stat table for a HockeyTech season, every player on one page. */
-  function fetchPlayerStats(hockeytechSeasonId, position) {
+  /**
+   * Skater or goalie stat table for a HockeyTech season, every player on one
+   * page: league-wide, or only a player's games for one team.
+   */
+  function fetchPlayerStats(hockeytechSeasonId, position, teamId = 'all') {
     return ahlApi.fetchStatview('players', {
       season: hockeytechSeasonId,
-      team: 'all',
+      team: teamId,
       position,
       rookies: 0,
       statsType: 'standard',
@@ -294,6 +305,38 @@ function createAhlService({
         );
       }
       return readFeedEntry(feedEntries[report](hockeytechSeasonId));
+    },
+
+    /** Cached raw skater or goalie (`position`) stat table of one team and HockeyTech season. */
+    getTeamPlayerStats(hockeytechSeasonId, position, teamId) {
+      return readFeedEntry(
+        feedEntries.teamPlayerStats(hockeytechSeasonId, position, teamId),
+      );
+    },
+
+    /**
+     * Raw game summary of one game: served from the cache forever once
+     * final, else refetched after GAME_SUMMARY_TTL_MS.
+     */
+    async getGameSummary(gameId) {
+      const key = `ahl:gamesummary:${gameId}`;
+      const cachedSummary = await readCache(CACHE_TYPES.SCHEDULE, key, {
+        ttlMs: Infinity,
+      });
+      if (cachedSummary?.details?.final === '1') return cachedSummary;
+      return getOrFetchCached(
+        CACHE_TYPES.SCHEDULE,
+        key,
+        () => ahlApi.fetchGameSummary(gameId),
+        { ttlMs: GAME_SUMMARY_TTL_MS },
+      );
+    },
+
+    /** Latest update of any stored AHL report, or null when none is stored. */
+    getLatestReportUpdate() {
+      return withTransaction((client) =>
+        ahlRepository.getLatestAhlReportUpdate(client),
+      );
     },
   };
 }

@@ -237,6 +237,14 @@ async function upsertAhlStatReport(
   );
 }
 
+/** When any stored AHL report last changed, or null when none is stored. */
+async function getLatestAhlReportUpdate(client) {
+  const { rows } = await client.query(
+    'SELECT max(updated_at) AS latest_update FROM ahl_team_stat_reports',
+  );
+  return rows[0]?.latest_update ?? null;
+}
+
 module.exports = {
   upsertAhlSeasons,
   upsertAhlTeams,
@@ -245,4 +253,5 @@ module.exports = {
   replaceAhlRoster,
   getAhlStatReport,
   upsertAhlStatReport,
+  getLatestAhlReportUpdate,
 };

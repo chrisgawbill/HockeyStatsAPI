@@ -165,6 +165,34 @@ HockeyTech numbers each regular season, playoff and exhibition with its own id. 
 
 Migration 014 adds `ahl_seasons`, `ahl_teams`, `ahl_players`, `ahl_schedule_games`, `ahl_roster_entries` and `ahl_team_stat_reports` (one raw payload per HockeyTech season, team and report; league-wide `standings`, `skaters` and `goalies` under team id 0). They are kept apart from the NHL tables because AHL ids can collide with NHL ids, and every row keeps its raw `source_payload`. The scheduled schedule refresh (3x daily) also re-fetches the current AHL season (and its playoffs once they start): seasons, teams, schedule, standings and league-wide skater and goalie stats. Rosters are stored when they are first read. There is no live AHL game poll yet. AHL cache keys start with `ahl:` and use the normal lifetimes below.
 
+### AHL read routes (`?league=ahl`)
+
+These routes take `league` (`nhl` by default, or `ahl`; anything else is a 400). Without it, or with `league=nhl`, they answer exactly as before. With `league=ahl` they serve AHL data in the NHL response shape, with `?season=` working the same way:
+
+| Route | AHL answer |
+| --- | --- |
+| `GET /standings` | `{ standings, league }` from the regular season's conference standings; a season the AHL does not have gives empty standings |
+| `GET /schedule` | `{ games, league }`: every game of the season id (exhibition, regular season and playoffs), sorted by start |
+| `GET /schedule/:gameId` | The boxscore fields the web app reads, from HockeyTech's `gameSummary` (cached forever once final, else 1 minute); `gameId` is a HockeyTech game id, 404 when malformed or unknown |
+| `GET /team/:teamId?` | `{ data, total, league }`: NHL team summary rows built from the standings; `teamId` is a HockeyTech team id |
+| `GET /team/roster/:triCode` | RosterContract plus `league`; 404 for a tri-code the AHL does not have that season |
+| `GET /team/schedule/:triCode` | `{ games, league }` of that team from the season schedule |
+| `GET /player/skater/summary`, `GET /player/goalie/summary` | Summary rows; `?teamId=` is a HockeyTech team id and reads only that team's games (`ahl:<position>:<season>:<team>` cache) |
+| `GET /player/skater/statLeaders/:stat`, `GET /player/goalie/statLeaders/:stat` | Top 10 for `goals`, `assists`, `points`, `wins`, `shutouts`, `savePctg` and `goalsAgainstAverage`; any other category (such as `faceoffLeaders`) answers `[]` |
+| `GET /player/stats/version` | `{ version, league }` from the latest stored AHL report |
+
+Object responses carry `league: "ahl"`; list responses (player summaries and stat leaders) carry it on every row. Tri-codes and ids are looked up only among AHL teams, so `TOR` with `league=ahl` is the Toronto Marlies. A savePctg or goalsAgainstAverage leader needs at least a third of the most games any goalie has played (a stand-in for the AHL's qualifying rule). `/team/lines`, `/schedule/playbyplay`, `/schedule/landing`, `/player/skater/corsi`, `/player/skater/faceoffs`, `/rivalries`, `/rink-quest` and `/python-service` answer 404 for `league=ahl`.
+
+Fields the feed does not have are `null` (never invented):
+
+- Standings: `wildcardSequence`, `leagueL10Sequence`; `teamLogo` when the team is not in that season's team list. `otLosses` counts overtime and shootout losses together, as the NHL does; `divisionSequence` is the order within the division across the conference list.
+- Schedule games: `gameCenter`, `playoffRound`, `seriesWins`, `topSeedTeamAbbrev`, `bottomSeedTeamAbbrev`, and `gameTime` while the date or time is to be decided. `broadcasts` is always `[]` and `ticketLink` is `null` except for future games with a tickets link.
+- Boxscore: `clock`, each team's `darkLogo`; skaters' `powerPlayGoals`, `shifts`, `giveaways`, `takeaways`, and `toi` (the feed sends an untracked `0:00`), and `faceoffWinningPctg` without faceoffs taken; goalies' `evenStrengthShotsAgainst`, `powerPlayShotsAgainst`, `shorthandedShotsAgainst`. Names are "F. Last" like the NHL's. There is no playoff series or three stars.
+- Team summary: `faceoffWinPct`, `shotsForPerGame`, `shotsAgainstPerGame`, `powerPlayNetPct`, `penaltyKillNetPct`, `teamShutouts`, `ties`.
+- Skater summary: `faceoffWinPct`, `toiPerGame`. Goalie `toiPerGame` is total minutes played over games played.
+- Stat leaders: `sweaterNumber`, `headshot`.
+- Positions keep HockeyTech's `F` for a forward without a listed position; `LW`/`RW` become `L`/`R`.
+
 ## Caching
 
 NHL payloads are cached in Postgres (`app_cache`) when `CACHE_DATABASE_URL` is set, otherwise in `src/cache/` (see `CACHE_STORAGE` in `.env.example`). Each type has a default lifetime (`CACHE_TTLS` in `src/platform/cacheManager.js`: 24 hours for player landings, rosters, standings and weekly report rows, 12 hours for schedules); some reads set a shorter one (5-minute gamecenter and preliminary shift charts, 1-minute play-by-play while a game is live, 10-minute current week).
